@@ -82,11 +82,17 @@ def main():
     print("🚀 Starting PillTrack (Survival Mode - Low Voltage Safe)...")
     
     # Check Model
-    model_path = config.MODEL_YOLO_PATH.replace('.pt', '.onnx')
-    if not os.path.exists(model_path):
-        print("⚠️ ONNX not found, using .pt (Heavy!)")
+# 1. Load Engines
+    # ✅ FORCE .PT MODE: บังคับใช้ไฟล์ .pt ตรงๆ เพื่อตัดปัญหา ONNX Error
+    print("forcing load .pt model...")
+    # ตรวจสอบว่าชื่อไฟล์ใน config.py ถูกต้อง (ต้องลงท้ายด้วย .pt)
+    if config.MODEL_YOLO_PATH.endswith('.onnx'):
+        # ถ้าเผลอตั้งเป็น .onnx ให้แก้กลับเป็น .pt เอง
+        model_path = config.MODEL_YOLO_PATH.replace('.onnx', '.pt')
+    else:
         model_path = config.MODEL_YOLO_PATH
-        
+
+    print(f"👉 Loading Model: {model_path}")
     yolo = YOLODetector(model_path)
     identifier = SIFTIdentifier()
     db = VectorDB()
