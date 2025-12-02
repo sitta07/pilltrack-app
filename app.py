@@ -8,11 +8,6 @@ from engines import YOLODetector, SIFTIdentifier
 from database import VectorDB
 from his_mock import HISSystem
 
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
 # ✅ POWER SAVING 1: บังคับใช้ CPU 1 Core
 try:
     import torch
@@ -94,16 +89,13 @@ def main():
     print("🚀 Starting PillTrack (Survival Mode + GUI)...")
     
     # ✅ FORCE .PT MODE: บังคับใช้ไฟล์ .pt
-    # 1. Load Engines
-    print(f"👉 Loading Model: {config.MODEL_YOLO_PATH}")
-    
-    # เช็คเผื่อไว้นิดนึง ถ้าหา ONNX ไม่เจอจริงๆ ให้ fallback
-    if not os.path.exists(config.MODEL_YOLO_PATH):
-        print("⚠️ ONNX not found! Switching to .pt")
+    print("👉 Forcing load .pt model...")
+    if config.MODEL_YOLO_PATH.endswith('.onnx'):
         model_path = config.MODEL_YOLO_PATH.replace('.onnx', '.pt')
     else:
         model_path = config.MODEL_YOLO_PATH
-        
+
+    print(f"👉 Loading Model: {model_path}")
     yolo = YOLODetector(model_path)
     identifier = SIFTIdentifier()
     db = VectorDB()
