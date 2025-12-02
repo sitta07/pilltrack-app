@@ -8,26 +8,39 @@ from engines import YOLODetector, SIFTIdentifier
 from database import VectorDB
 from his_mock import HISSystem
 
+# ✅ Import Library กล้องของ Pi 5
+try:
+    from picamera2 import Picamera2
+except ImportError:
+    print("❌ Error: Picamera2 not found. Please run on Raspberry Pi OS.")
+
 # ==========================================
-# 🧵 CLASS: WebcamStream (Tuned for RPi 5)
+# 🧵 CLASS: WebcamStream (Picamera2 Native)
 # ==========================================
 class WebcamStream:
-    def __init__(self, src=0):
-        # ✅ PI OPTIMIZATION 1: ใช้ backend V4L2
-        self.stream = cv2.VideoCapture(src, cv2.CAP_V4L2)
+    def __init__(self):
+        print("📸 Initializing Picamera2...")
+        self.picam2 = Picamera2()
+
+        # Config ให้เป็น BGR888 (เพื่อให้ OpenCV เอาไปใช้ได้เลย ไม่ต้องแปลงสี)
+        # Size 640x480 เพื่อความเร็ว
+        config = self.picam2.create_preview_configuration(
+            main={"size": (640, 480), "format": "BGR888"},
+            controls={"FrameDurationLimits": (33333, 33333)} # Lock ~30 FPS
+        )
+        self.picam2.configure(config)
+        self.picam2.start()
+
+        # Tuning (Auto Focus/White Balance)
+        self.picam2.set_controls({
+            "AwbMode": 0,       # Auto White Balance
+            "AeMeteringMode": 0 # Center Weighted
+        })
         
-        # ✅ PI OPTIMIZATION 2: ลดความละเอียด input เพื่อ FPS สูงสุด
-        # YOLO รับภาพ 640x640 การส่งภาพ 4K ไปให้มันย่อเสียเวลาเปล่าครับ
-        self.stream.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.stream.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        # รอ Warmup แป๊บนึง
+        time.sleep(1.0)
         
-        # เช็คว่าเปิดกล้องติดไหม
-        if not self.stream.isOpened():
-            print("❌ Error: Could not open camera. Check connection!")
-            # ลอง fallback ไปใช้ค่า default เผื่อ V4L2 มีปัญหา
-            self.stream.open(src)
-            
-        (self.grabbed, self.frame) = self.stream.read()
+        self.frame = self.picam2.capture_array()
         self.stopped = False
 
     def start(self):
@@ -36,21 +49,28 @@ class WebcamStream:
 
     def update(self):
         while True:
-            if self.stopped: return
-            (self.grabbed, self.frame) = self.stream.read()
+            if self.stopped:
+                return
+            # ดึงภาพแบบ Array (เร็วมาก)
+            try:
+                self.frame = self.picam2.capture_array()
+            except Exception as e:
+                print(f"Camera Error: {e}")
+                self.stopped = True
 
     def read(self):
         return self.frame
 
     def stop(self):
         self.stopped = True
-        self.stream.release()
+        self.picam2.stop()
+        self.picam2.close()
 
 # ==========================================
 # 🎨 DASHBOARD
 # ==========================================
 def draw_dashboard(img, match_result, fps):
-    # วาด FPS ตัวใหญ่ๆ สีเหลือง
+    # วาด FPS
     cv2.putText(img, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
                 0.8, (0, 255, 255), 2)
     return img
@@ -59,13 +79,12 @@ def draw_dashboard(img, match_result, fps):
 # 🚀 MAIN LOOP
 # ==========================================
 def main():
-    print("🚀 Starting PillTrack on Raspberry Pi 5...")
+    print("🚀 Starting PillTrack on Raspberry Pi 5 (Picamera2 Engine)...")
     
     # 1. Load Engines
-    # พยายามโหลด ONNX ก่อน
     model_path = config.MODEL_YOLO_PATH.replace('.pt', '.onnx')
     if not os.path.exists(model_path):
-        print("⚠️ ONNX not found, using .pt (Slower on Pi)")
+        print("⚠️ ONNX not found, using .pt")
         model_path = config.MODEL_YOLO_PATH
         
     yolo = YOLODetector(model_path)
@@ -76,43 +95,43 @@ def main():
     # 2. Setup Data
     current_patient_id = "HN001" 
     target_drug_list = his.get_patient_drugs(current_patient_id)
-    # target_drug_list = None # ปลดล็อคถ้าจะหาทุกอย่าง
+    # target_drug_list = None 
 
-    # 3. Start Camera
+    # 3. Start Camera (Picamera2)
     if config.USE_CAMERA:
-        print("📷 Camera Starting (Warmup 2s)...")
-        vs = WebcamStream(src=config.CAMERA_ID).start()
-        time.sleep(2.0)
+        try:
+            # ไม่ต้องใส่ src เพราะ Picamera2 หาเอง
+            vs = WebcamStream().start()
+            print("✅ Camera Started!")
+        except Exception as e:
+            print(f"❌ Camera Failed: {e}")
+            return
     else:
-        print("❌ Error: Config is not set to use Camera")
+        print("❌ Config USE_CAMERA is False")
         return
 
     fps_avg = 0
     
     while True:
-        # รับภาพจาก Thread
+        # รับภาพ
         frame = vs.read()
-        if frame is None: 
-            print("⚠️ Frame not received")
-            continue
+        if frame is None: continue
 
         loop_start = time.time()
         annotated_frame = frame.copy()
         img_area = frame.shape[0] * frame.shape[1]
 
         # --- A. DETECT ---
-        # บน Pi อาจจะต้องลด max_det ลงอีกเพื่อประหยัด CPU
+        # iou=0.20 เพื่อลดกรอบซ้อน
         results = yolo.detect(frame, conf=0.60, iou=0.20, agnostic_nms=True, max_det=15)
         
         for i, box in enumerate(results.boxes):
             # --- B. FILTER NOISE ---
             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
             
-            # กรองขนาด: เล็กกว่า 2% ของภาพ -> ทิ้ง
             box_area = (x2-x1) * (y2-y1)
             if box_area < (img_area * 0.02): continue 
 
-            # กรองสัดส่วน
             w, h = (x2-x1), (y2-y1)
             if h == 0: continue
             aspect = w / h
@@ -126,17 +145,13 @@ def main():
             
             # --- D. VISUALIZE (GREEN ONLY) ---
             if match_result:
-                # กรอบเขียว
                 cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 
-                # ชื่อยา
                 label = f"{match_result['name']} ({match_result['inliers']})"
-                # ปรับตำแหน่งตัวหนังสือให้ไม่ตกขอบ
                 text_y = y1 - 10 if y1 - 10 > 10 else y1 + 20
                 cv2.putText(annotated_frame, label, (x1, text_y), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                 
-                # Segmentation Mask
                 if mask is not None:
                     mask_raw = mask.data[0].cpu().numpy()
                     mask_rs = cv2.resize(mask_raw, (frame.shape[1], frame.shape[0]))
@@ -147,7 +162,6 @@ def main():
         fps_avg = 1.0 / (time.time() - loop_start)
         annotated_frame = draw_dashboard(annotated_frame, None, fps_avg)
         
-        # Show Result
         cv2.imshow("PillTrack Pi 5", annotated_frame)
         
         if cv2.waitKey(1) == ord('q'): break
