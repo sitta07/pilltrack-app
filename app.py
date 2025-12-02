@@ -8,6 +8,11 @@ from engines import YOLODetector, SIFTIdentifier
 from database import VectorDB
 from his_mock import HISSystem
 
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
 # ✅ POWER SAVING 1: บังคับใช้ CPU 1 Core
 try:
     import torch
