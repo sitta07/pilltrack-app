@@ -3,11 +3,10 @@ import os
 # =========================
 # 🔧 SYSTEM SETTINGS
 # =========================
-USE_CAMERA = False               
-CAMERA_ID = 0                    
+USE_CAMERA = True                # ✅ เปิดใช้กล้อง
+CAMERA_ID = 0                    # ✅ ปกติ Pi Camera จะเป็น 0
 DEBUG_MODE = True                
-SAVE_DEBUG_CROPS = True          
-
+DEBUG_DIR = 'debug_output'
 # =========================
 # 📂 PATHS
 # =========================
