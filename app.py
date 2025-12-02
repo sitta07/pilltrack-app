@@ -8,38 +8,36 @@ from engines import YOLODetector, SIFTIdentifier
 from database import VectorDB
 from his_mock import HISSystem
 
-# ✅ Import Library กล้องของ Pi 5
-try:
-    from picamera2 import Picamera2
-except ImportError:
-    print("❌ Error: Picamera2 not found. Please run on Raspberry Pi OS.")
+# ✅ Import ตรงๆ เลย (ถ้า Environment ถูก ต้องไม่ Error)
+from picamera2 import Picamera2
 
 # ==========================================
-# 🧵 CLASS: WebcamStream (Picamera2 Native)
+# 🧵 CLASS: WebcamStream (Based on cam_pro_7.py)
 # ==========================================
 class WebcamStream:
     def __init__(self):
-        print("📸 Initializing Picamera2...")
+        print("📸 Initializing Picamera2 (cam_pro_7 logic)...")
         self.picam2 = Picamera2()
 
-        # Config ให้เป็น BGR888 (เพื่อให้ OpenCV เอาไปใช้ได้เลย ไม่ต้องแปลงสี)
-        # Size 640x480 เพื่อความเร็ว
+        # 1. Config: อ้างอิงตาม cam_pro_7.py เป๊ะๆ
+        # ใช้ RGB888 ตามที่คุณเทสต์ผ่าน
         config = self.picam2.create_preview_configuration(
-            main={"size": (640, 480), "format": "BGR888"},
+            main={"size": (640, 480), "format": "RGB888"},
             controls={"FrameDurationLimits": (33333, 33333)} # Lock ~30 FPS
         )
         self.picam2.configure(config)
         self.picam2.start()
 
-        # Tuning (Auto Focus/White Balance)
+        # 2. Tuning: Set Controls ตาม cam_pro_7.py
         self.picam2.set_controls({
-            "AwbMode": 0,       # Auto White Balance
-            "AeMeteringMode": 0 # Center Weighted
+            "AwbMode": 0,       # 0 = Auto
+            "AeMeteringMode": 0 # 0 = CentreWeighted
         })
         
-        # รอ Warmup แป๊บนึง
-        time.sleep(1.0)
+        # Warm up 2 วินาที
+        time.sleep(2.0)
         
+        # ลองจับภาพแรก
         self.frame = self.picam2.capture_array()
         self.stopped = False
 
@@ -51,9 +49,14 @@ class WebcamStream:
         while True:
             if self.stopped:
                 return
-            # ดึงภาพแบบ Array (เร็วมาก)
             try:
-                self.frame = self.picam2.capture_array()
+                # 3. Capture: ดึงภาพแบบ Array
+                raw_frame = self.picam2.capture_array()
+                
+                # ⚠️ สำคัญ: Picamera ส่งมาเป็น RGB แต่ OpenCV/YOLO ชอบ BGR
+                # เราต้องแปลงสีนิดนึง ไม่งั้นสีเพี้ยน (ยาแดงจะเป็นน้ำเงิน)
+                self.frame = cv2.cvtColor(raw_frame, cv2.COLOR_RGB2BGR)
+                
             except Exception as e:
                 print(f"Camera Error: {e}")
                 self.stopped = True
@@ -70,7 +73,6 @@ class WebcamStream:
 # 🎨 DASHBOARD
 # ==========================================
 def draw_dashboard(img, match_result, fps):
-    # วาด FPS
     cv2.putText(img, f"FPS: {fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 
                 0.8, (0, 255, 255), 2)
     return img
@@ -79,7 +81,7 @@ def draw_dashboard(img, match_result, fps):
 # 🚀 MAIN LOOP
 # ==========================================
 def main():
-    print("🚀 Starting PillTrack on Raspberry Pi 5 (Picamera2 Engine)...")
+    print("🚀 Starting PillTrack on Raspberry Pi 5...")
     
     # 1. Load Engines
     model_path = config.MODEL_YOLO_PATH.replace('.pt', '.onnx')
@@ -92,28 +94,20 @@ def main():
     db = VectorDB()
     his = HISSystem()
     
-    # 2. Setup Data
     current_patient_id = "HN001" 
     target_drug_list = his.get_patient_drugs(current_patient_id)
-    # target_drug_list = None 
 
-    # 3. Start Camera (Picamera2)
-    if config.USE_CAMERA:
-        try:
-            # ไม่ต้องใส่ src เพราะ Picamera2 หาเอง
-            vs = WebcamStream().start()
-            print("✅ Camera Started!")
-        except Exception as e:
-            print(f"❌ Camera Failed: {e}")
-            return
-    else:
-        print("❌ Config USE_CAMERA is False")
+    # 2. Start Camera
+    try:
+        vs = WebcamStream().start()
+        print("✅ Camera Started!")
+    except Exception as e:
+        print(f"❌ Camera Failed to Start: {e}")
         return
 
     fps_avg = 0
     
     while True:
-        # รับภาพ
         frame = vs.read()
         if frame is None: continue
 
@@ -122,11 +116,10 @@ def main():
         img_area = frame.shape[0] * frame.shape[1]
 
         # --- A. DETECT ---
-        # iou=0.20 เพื่อลดกรอบซ้อน
         results = yolo.detect(frame, conf=0.60, iou=0.20, agnostic_nms=True, max_det=15)
         
         for i, box in enumerate(results.boxes):
-            # --- B. FILTER NOISE ---
+            # --- B. FILTER ---
             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
             
             box_area = (x2-x1) * (y2-y1)
@@ -143,11 +136,11 @@ def main():
             
             match_result = db.search(identifier, crop_img, target_drugs=target_drug_list)
             
-            # --- D. VISUALIZE (GREEN ONLY) ---
+            # --- D. VISUALIZE ---
             if match_result:
                 cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                
                 label = f"{match_result['name']} ({match_result['inliers']})"
+                
                 text_y = y1 - 10 if y1 - 10 > 10 else y1 + 20
                 cv2.putText(annotated_frame, label, (x1, text_y), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
