@@ -8,15 +8,15 @@ class YOLODetector:
         print(f"🔄 Loading YOLO Model: {model_path}...")
         self.model = YOLO(model_path)
     
-    # ✅ ปลดล็อค Parameter เพื่อให้จูนจาก app.py ได้
-    def detect(self, frame, conf=0.5, iou=0.5, agnostic_nms=True, max_det=100):
+    def detect(self, frame, conf=0.5, iou=0.5, agnostic_nms=True, max_det=100, **kwargs):
         results = self.model(frame, 
                              verbose=False, 
                              conf=conf, 
                              iou=iou, 
-                             agnostic_nms=agnostic_nms, # ช่วยลดกรอบซ้อนข้าม Class
-                             max_det=max_det,           # จำกัดจำนวนสูงสุด
-                             retina_masks=True)
+                             agnostic_nms=agnostic_nms, 
+                             max_det=max_det,           
+                             retina_masks=True,
+                             **kwargs) # ส่ง imgsz ต่อให้โมเดล
         return results[0]
 
     def get_crop(self, img, box, mask_data):
