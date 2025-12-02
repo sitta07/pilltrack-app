@@ -8,8 +8,7 @@ from engines import YOLODetector, SIFTIdentifier
 from database import VectorDB
 from his_mock import HISSystem
 
-# ✅ POWER SAVING TRICK 1: บังคับใช้ CPU แค่ 1 Core
-# เพื่อไม่ให้กินไฟกระชาก 4 Core พร้อมกัน
+# ✅ POWER SAVING 1: บังคับใช้ CPU 1 Core
 try:
     import torch
     torch.set_num_threads(1) 
@@ -30,11 +29,10 @@ class WebcamStream:
         print("📸 Initializing Picamera2 (Low Power Mode)...")
         self.picam2 = Picamera2()
 
-        # ✅ POWER SAVING TRICK 2: ลดความละเอียดกล้องเหลือ 320x240
-        # เล็กหน่อย แต่ประหยัด Bandwidth และ Ram
+        # ✅ POWER SAVING 2: ลดความละเอียดเหลือ 320x240
         config = self.picam2.create_preview_configuration(
             main={"size": (320, 240), "format": "RGB888"},
-            controls={"FrameDurationLimits": (66666, 66666)} # Lock ~15 FPS (ไม่เอา 30)
+            controls={"FrameDurationLimits": (66666, 66666)} # Lock ~15 FPS
         )
         self.picam2.configure(config)
         self.picam2.start()
@@ -61,7 +59,7 @@ class WebcamStream:
             try:
                 raw = self.picam2.capture_array()
                 self.frame = self.convert_frame(raw)
-                # ✅ POWER SAVING TRICK 3: ให้ Thread กล้องพักบ้าง
+                # ✅ POWER SAVING 3: พัก Thread กล้องนิดนึง
                 time.sleep(0.05) 
             except Exception as e:
                 print(f"Camera Error: {e}")
@@ -76,18 +74,23 @@ class WebcamStream:
         self.picam2.close()
 
 # ==========================================
+# 🎨 DASHBOARD
+# ==========================================
+def draw_dashboard(img, fps):
+    # วาด FPS มุมซ้ายบน
+    cv2.putText(img, f"FPS: {fps:.1f}", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 
+                0.6, (0, 255, 255), 2)
+    return img
+
+# ==========================================
 # 🚀 MAIN LOOP
 # ==========================================
 def main():
-    print("🚀 Starting PillTrack (Survival Mode - Low Voltage Safe)...")
+    print("🚀 Starting PillTrack (Survival Mode + GUI)...")
     
-    # Check Model
-# 1. Load Engines
-    # ✅ FORCE .PT MODE: บังคับใช้ไฟล์ .pt ตรงๆ เพื่อตัดปัญหา ONNX Error
-    print("forcing load .pt model...")
-    # ตรวจสอบว่าชื่อไฟล์ใน config.py ถูกต้อง (ต้องลงท้ายด้วย .pt)
+    # ✅ FORCE .PT MODE: บังคับใช้ไฟล์ .pt
+    print("👉 Forcing load .pt model...")
     if config.MODEL_YOLO_PATH.endswith('.onnx'):
-        # ถ้าเผลอตั้งเป็น .onnx ให้แก้กลับเป็น .pt เอง
         model_path = config.MODEL_YOLO_PATH.replace('.onnx', '.pt')
     else:
         model_path = config.MODEL_YOLO_PATH
@@ -115,25 +118,25 @@ def main():
             if frame is None: continue
 
             loop_start = time.time()
+            annotated_frame = frame.copy()
             img_area = frame.shape[0] * frame.shape[1]
             found_drugs = []
 
             # --- A. DETECT ---
-            # ✅ POWER SAVING TRICK 4: ลด imgsz เหลือ 320
-            # ภาพเล็กลงครึ่งนึง กินไฟน้อยลงเยอะ
+            # ✅ POWER SAVING 4: imgsz=320, max_det=10
             results = yolo.detect(frame, 
                                   conf=0.60, 
                                   iou=0.20, 
                                   agnostic_nms=True, 
                                   max_det=10,
-                                  imgsz=320) # <--- สำคัญ!
+                                  imgsz=320)
             
             for i, box in enumerate(results.boxes):
-                # --- B. FILTER ---
+                # --- B. FILTER NOISE ---
                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
                 
                 box_area = (x2-x1) * (y2-y1)
-                if box_area < (img_area * 0.05): continue # กรองขยะเล็กๆ ทิ้งไวๆ (5%)
+                if box_area < (img_area * 0.05): continue 
 
                 w, h = (x2-x1), (y2-y1)
                 if h == 0: continue
@@ -146,19 +149,32 @@ def main():
                 
                 match_result = db.search(identifier, crop_img, target_drugs=target_drug_list)
                 
+                # --- D. VISUALIZE (วาดกรอบเขียว) ---
                 if match_result:
-                    found_drugs.append(f"{match_result['name']}")
+                    found_drugs.append(match_result['name'])
+                    
+                    # วาดกรอบ
+                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    
+                    # วาดชื่อยา
+                    label = f"{match_result['name']} ({match_result['inliers']})"
+                    text_y = y1 - 10 if y1 - 10 > 10 else y1 + 15
+                    cv2.putText(annotated_frame, label, (x1, text_y), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-            # --- D. REPORT ---
+            # --- E. SHOW RESULT ---
             fps_avg = 1.0 / (time.time() - loop_start)
-            status_msg = "Scanning..."
-            if found_drugs:
-                status_msg = f"🟢 FOUND: {', '.join(found_drugs)}"
+            annotated_frame = draw_dashboard(annotated_frame, fps_avg)
             
-            print(f"\rFPS: {fps_avg:.1f} | {status_msg}" + " " * 20, end="", flush=True)
+            # ปริ้น Status ลง Terminal ด้วย
+            status_msg = f"🟢 FOUND: {', '.join(found_drugs)}" if found_drugs else "Scanning..."
+            print(f"\rFPS: {fps_avg:.1f} | {status_msg}" + " " * 10, end="", flush=True)
             
-            # ✅ POWER SAVING TRICK 5: บังคับให้ CPU พักหายใจ 0.1 วินาทีทุกรอบ
-            # อันนี้ช่วยลดความร้อนและไฟกระชากได้ดีที่สุด
+            # ✅ เปิดหน้าต่างภาพ (GUI)
+            cv2.imshow("PillTrack Pi 5 (Survival)", annotated_frame)
+            if cv2.waitKey(1) == ord('q'): break
+            
+            # ✅ POWER SAVING 5: พักหายใจ 0.1 วิ
             time.sleep(0.1)
 
     except KeyboardInterrupt:
@@ -166,6 +182,7 @@ def main():
 
     finally:
         vs.stop()
+        cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()
