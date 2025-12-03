@@ -19,84 +19,101 @@ except ImportError as e:
     sys.exit(1)
 
 # ==========================================
-# ⚡ FAST YOLO (ใช้ OpenCV DNN แก้ช้า/กระจาย)
+# ⚡ UNIVERSAL FAST YOLO (Auto-Fix Shape)
 # ==========================================
 class FastYOLODetector:
-    def __init__(self, model_path, conf_thres=0.6, iou_thres=0.4):
-        print(f"⚡ Loading FastYOLO: {model_path}")
-        # ใช้ cv2.dnn อ่าน ONNX (เร็วกว่าและจัดการ Memory ดีกว่าบน Pi)
+    def __init__(self, model_path, conf_thres=0.5, iou_thres=0.4):
+        print(f"⚡ Loading FastYOLO (Universal Mode): {model_path}")
         self.net = cv2.dnn.readNetFromONNX(model_path)
-        
-        # ตั้งค่าให้รันบน CPU แต่ใช้ Instruction Set ที่เร็วที่สุด
         self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
         self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
         
         self.conf_thres = conf_thres
         self.iou_thres = iou_thres
-        self.input_size = (320, 320) # บังคับ 320 เพื่อความเร็ว
+        self.input_size = (320, 320) # ต้องตรงกับตอน export (แนะนำ 320 เพื่อความเร็ว)
 
     def detect(self, image):
-        # 1. Pre-process (Letterbox อัตโนมัติในตัว blobFromImage)
+        # 1. Prepare Input
         blob = cv2.dnn.blobFromImage(image, 1/255.0, self.input_size, swapRB=True, crop=False)
         self.net.setInput(blob)
         
         # 2. Inference
-        outputs = self.net.forward()
-        
-        # 3. Post-process (แก้ปัญหาภาพกระจายตรงนี้)
-        outputs = np.array([cv2.transpose(outputs[0])])
-        rows = outputs.shape[1]
-        
+        # OpenCV บางรุ่นคืนค่าเป็น tuple (outputs, layerNames)
+        raw_output = self.net.forward()
+
+        # 3. ✅ AUTO-FIX SHAPE LOGIC (แก้ปัญหา outputs[0] error)
+        # ตรวจสอบว่า raw_output เป็น list/tuple หรือ numpy array
+        if isinstance(raw_output, (list, tuple)):
+            predictions = raw_output[0]
+        else:
+            predictions = raw_output
+
+        # ลดมิติ Batch ออก: (1, 84, 8400) -> (84, 8400)
+        predictions = np.squeeze(predictions)
+
+        # ตรวจสอบว่าต้อง Transpose ไหม? 
+        # YOLOv8 ปกติจะมาแบบ (Channels, Anchors) เช่น (6, 8400)
+        # เราต้องการ (Anchors, Channels) เช่น (8400, 6) เพื่อวนลูป
+        if predictions.ndim == 2 and predictions.shape[0] < predictions.shape[1]:
+            predictions = predictions.transpose()
+
+        # 4. Extract Boxes
         boxes = []
         scores = []
         class_ids = []
         
-        # ดึงสัดส่วนการย่อขยายเพื่อ Map กล่องกลับไปภาพจริง
+        # Scaling Factors
         img_h, img_w = image.shape[:2]
-        x_factor = img_w / self.input_size[0]
-        y_factor = img_h / self.input_size[1]
+        x_scale = img_w / self.input_size[0]
+        y_scale = img_h / self.input_size[1]
 
-        # Loop แบบเร็ว (Filter เบื้องต้น)
-        for i in range(rows):
-            classes_scores = outputs[0][i][4:]
-            (minScore, maxScore, minClassLoc, (x, maxClassIndex)) = cv2.minMaxLoc(classes_scores)
+        # วนลูปหา object (predictions คือ array ขนาด [8400, 4+classes])
+        # เร่งความเร็วด้วยการกรอง confidence ก่อนวนลูป numpy
+        
+        # หา max score ของแต่ละ row
+        # (YOLOv8: 0-3 คือ bbox, 4 เป็นต้นไปคือ class scores)
+        if predictions.shape[1] > 4:
+            class_scores = predictions[:, 4:]
+            max_scores = np.max(class_scores, axis=1)
+            max_indices = np.argmax(class_scores, axis=1)
             
-            if maxScore >= self.conf_thres:
-                box = outputs[0][i][0:4]
-                cx = box[0]
-                cy = box[1]
-                w = box[2]
-                h = box[3]
+            # กรองเฉพาะอันที่มั่นใจ (Vectorized Operation เร็วปรื๋อ)
+            keep_indices = max_scores >= self.conf_thres
+            
+            filtered_preds = predictions[keep_indices]
+            filtered_scores = max_scores[keep_indices]
+            filtered_classes = max_indices[keep_indices]
+            
+            for i, pred in enumerate(filtered_preds):
+                # YOLO format: cx, cy, w, h
+                cx, cy, w, h = pred[0], pred[1], pred[2], pred[3]
                 
-                left = int((cx - w/2) * x_factor)
-                top = int((cy - h/2) * y_factor)
-                width = int(w * x_factor)
-                height = int(h * y_factor)
+                # แปลงเป็น Pixel จริง
+                left = int((cx - w/2) * x_scale)
+                top = int((cy - h/2) * y_scale)
+                width = int(w * x_scale)
+                height = int(h * y_scale)
                 
                 boxes.append([left, top, width, height])
-                scores.append(float(maxScore))
-                class_ids.append(maxClassIndex)
+                scores.append(float(filtered_scores[i]))
+                class_ids.append(filtered_classes[i])
 
-        # 4. NMS (Non-Maximum Suppression) แบบ C++ (ตัวแก้กล่องซ้อน/กระจาย)
-        # นี่คือหัวใจสำคัญที่ทำให้กล่องนิ่ง!
+        # 5. NMS (แก้กล่องซ้อน)
         indices = cv2.dnn.NMSBoxes(boxes, scores, self.conf_thres, self.iou_thres)
         
         final_boxes = []
         if len(indices) > 0:
             for i in indices.flatten():
                 x, y, w, h = boxes[i]
-                # แปลง format ให้เหมือนเดิม เพื่อให้ code อื่นทำงานต่อได้
-                # [x1, y1, x2, y2]
+                # Clip ให้อยู่ในหน้าจอ
+                x = max(0, x)
+                y = max(0, y)
                 final_boxes.append((x, y, x+w, y+h))
                 
         return final_boxes
 
-    # ฟังก์ชันเสริมสำหรับ Crop รูป (เหมือนเดิม)
     def get_crop(self, frame, box):
         x1, y1, x2, y2 = box
-        h, w = frame.shape[:2]
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w, x2), min(h, y2)
         return frame[y1:y2, x1:x2]
 
 # ==========================================
@@ -140,8 +157,7 @@ class WebcamStream:
 # ==========================================
 class AsyncDetector:
     def __init__(self, model_path, patient_drugs):
-        # ✅ ใช้ Class ใหม่ที่นิ่งกว่าเดิม
-        self.yolo = FastYOLODetector(model_path, conf_thres=0.65, iou_thres=0.45)
+        self.yolo = FastYOLODetector(model_path, conf_thres=0.6, iou_thres=0.5)
         self.identifier = SIFTIdentifier()
         self.db = VectorDB()
         self.patient_drugs = patient_drugs
@@ -175,22 +191,21 @@ class AsyncDetector:
             if frame_to_process is not None:
                 h, w = frame_to_process.shape[:2]
                 
-                # 1. Detect using FastYOLO
-                # Return เป็น list ของ [x1, y1, x2, y2]
+                # 1. Detect
                 boxes = self.yolo.detect(frame_to_process)
                 
-                # 2. Sort & Filter
+                # 2. Filter & Sort
                 valid_boxes = []
-                self.latest_boxes = boxes # ส่งให้ UI วาดเลย
+                self.latest_boxes = boxes # Send to UI
                 
-                for i, box in enumerate(boxes):
+                for box in boxes:
                     x1, y1, x2, y2 = box
                     area = (x2-x1)*(y2-y1)
-                    if area > (w*h * 0.02): # กรองจุดรบกวนเล็กๆ
+                    if area > (w*h * 0.01): # Min Area 1%
                          valid_boxes.append((area, box))
                 
                 valid_boxes.sort(key=lambda x: x[0], reverse=True)
-                target_boxes = valid_boxes[:1] # เอาแค่ 1 อันดับแรก
+                target_boxes = valid_boxes[:1]
 
                 # 3. SIFT
                 current_found = set()
@@ -213,7 +228,7 @@ class AsyncDetector:
 def draw_ui(img, patient_info, found_set, boxes, fps):
     h, w = img.shape[:2]
     
-    # วาดจุด (Dots)
+    # Dots
     for (x1, y1, x2, y2) in boxes:
         cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
         cv2.circle(img, (cx, cy), 6, (50, 255, 50), -1)
@@ -251,17 +266,15 @@ def draw_ui(img, patient_info, found_set, boxes, fps):
 # 🚀 MAIN
 # ==========================================
 def main():
-    print("🚀 Starting PillTrack (Fast Mode)...")
+    print("🚀 Starting PillTrack (Auto-Fix Shape Mode)...")
     
-    # Auto ONNX
     if config.MODEL_YOLO_PATH.endswith('.pt'):
         model_path = config.MODEL_YOLO_PATH.replace('.pt', '.onnx')
     else:
         model_path = config.MODEL_YOLO_PATH
         
     if not os.path.exists(model_path):
-        print(f"❌ Error: ONNX file not found at {model_path}")
-        print("👉 Please run: yolo export model=best.pt format=onnx")
+        print(f"❌ ONNX file not found: {model_path}")
         sys.exit(1)
 
     his = HISSystem()
