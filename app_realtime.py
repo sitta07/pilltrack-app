@@ -235,7 +235,7 @@ def main():
                 active_buttons = [btn1, btn2, btn3]
 
             elif current_state == STATE_DOUBLE_CHECK:
-                results = yolo_main.detect(frame, conf=0.60, iou=0.45, agnostic_nms=True, max_det=5, imgsz=320)
+                results = yolo_main.detect(frame, conf=0.8, iou=0.45, agnostic_nms=True, max_det=5, imgsz=320)
                 
                 if frame_count % SIFT_SKIP_FRAMES == 0:
                     for i, box in enumerate(results.boxes):
