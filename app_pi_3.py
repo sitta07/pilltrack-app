@@ -19,65 +19,70 @@ except ImportError as e:
     sys.exit(1)
 
 # ==========================================
-# ⚡ UNIVERSAL FAST YOLO (Auto-Fix Shape)
+# ⚡ UNIVERSAL FAST YOLO (Auto-Scale Fix)
 # ==========================================
 class FastYOLODetector:
     def __init__(self, model_path, conf_thres=0.5, iou_thres=0.4):
-        print(f"⚡ Loading FastYOLO (Universal Mode): {model_path}")
+        print(f"⚡ Loading FastYOLO (Auto-Scale Mode): {model_path}")
         self.net = cv2.dnn.readNetFromONNX(model_path)
         self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
         self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
         
         self.conf_thres = conf_thres
         self.iou_thres = iou_thres
-        self.input_size = (320, 320) # ต้องตรงกับตอน export (แนะนำ 320 เพื่อความเร็ว)
+        # ตั้งค่า Input Size ให้ตรงกับที่ YOLO ต้องการ (320 หรือ 640)
+        # ถ้า export มา default ส่วนใหญ่คือ 640 แต่เราย่อเหลือ 320 เพื่อความเร็ว
+        self.input_size = (320, 320) 
 
     def detect(self, image):
         # 1. Prepare Input
-        blob = cv2.dnn.blobFromImage(image, 1/255.0, self.input_size, swapRB=True, crop=False)
+        # หมายเหตุ: Picamera2 ส่งมาเป็น RGB แล้ว -> swapRB=False (ไม่ต้องสลับสี)
+        blob = cv2.dnn.blobFromImage(image, 1/255.0, self.input_size, swapRB=False, crop=False)
         self.net.setInput(blob)
         
         # 2. Inference
-        # OpenCV บางรุ่นคืนค่าเป็น tuple (outputs, layerNames)
         raw_output = self.net.forward()
 
-        # 3. ✅ AUTO-FIX SHAPE LOGIC (แก้ปัญหา outputs[0] error)
-        # ตรวจสอบว่า raw_output เป็น list/tuple หรือ numpy array
+        # 3. จัดการ Shape ข้อมูล
         if isinstance(raw_output, (list, tuple)):
             predictions = raw_output[0]
         else:
             predictions = raw_output
 
-        # ลดมิติ Batch ออก: (1, 84, 8400) -> (84, 8400)
         predictions = np.squeeze(predictions)
 
-        # ตรวจสอบว่าต้อง Transpose ไหม? 
-        # YOLOv8 ปกติจะมาแบบ (Channels, Anchors) เช่น (6, 8400)
-        # เราต้องการ (Anchors, Channels) เช่น (8400, 6) เพื่อวนลูป
+        # Transpose ถ้าจำเป็น (ให้แถวเป็น Anchors 8400)
         if predictions.ndim == 2 and predictions.shape[0] < predictions.shape[1]:
             predictions = predictions.transpose()
 
-        # 4. Extract Boxes
         boxes = []
         scores = []
         class_ids = []
         
-        # Scaling Factors
         img_h, img_w = image.shape[:2]
-        x_scale = img_w / self.input_size[0]
-        y_scale = img_h / self.input_size[1]
 
-        # วนลูปหา object (predictions คือ array ขนาด [8400, 4+classes])
-        # เร่งความเร็วด้วยการกรอง confidence ก่อนวนลูป numpy
+        # 4. ✅ AUTO-SCALE LOGIC (แก้ปัญหามุมบนซ้าย)
+        # เช็คว่าค่าพิกัดสูงสุดมันน้อยกว่า 1.0 หรือไม่? (ถ้าใช่ แสดงว่าเป็น Normalize 0-1)
+        # เราสุ่มเช็คจาก 100 แถวแรกเพื่อความเร็ว
+        sample_max = np.max(predictions[:100, :4]) if predictions.shape[0] > 100 else 0
         
-        # หา max score ของแต่ละ row
-        # (YOLOv8: 0-3 คือ bbox, 4 เป็นต้นไปคือ class scores)
+        is_normalized = sample_max < 2.0 
+        
+        if is_normalized:
+            # ถ้าเป็น 0-1 ให้คูณด้วยขนาดภาพจริงเลย
+            scale_w = img_w
+            scale_h = img_h
+        else:
+            # ถ้าเป็น Pixel (เช่น 0-320) ให้คูณอัตราส่วน
+            scale_w = img_w / self.input_size[0]
+            scale_h = img_h / self.input_size[1]
+
+        # 5. Loop หา Object
         if predictions.shape[1] > 4:
             class_scores = predictions[:, 4:]
             max_scores = np.max(class_scores, axis=1)
             max_indices = np.argmax(class_scores, axis=1)
             
-            # กรองเฉพาะอันที่มั่นใจ (Vectorized Operation เร็วปรื๋อ)
             keep_indices = max_scores >= self.conf_thres
             
             filtered_preds = predictions[keep_indices]
@@ -85,35 +90,35 @@ class FastYOLODetector:
             filtered_classes = max_indices[keep_indices]
             
             for i, pred in enumerate(filtered_preds):
-                # YOLO format: cx, cy, w, h
                 cx, cy, w, h = pred[0], pred[1], pred[2], pred[3]
                 
-                # แปลงเป็น Pixel จริง
-                left = int((cx - w/2) * x_scale)
-                top = int((cy - h/2) * y_scale)
-                width = int(w * x_scale)
-                height = int(h * y_scale)
+                # คำนวณพิกัด (ใช้ scale ที่ถูกต้อง)
+                left = int((cx - w/2) * scale_w)
+                top = int((cy - h/2) * scale_h)
+                width = int(w * scale_w)
+                height = int(h * scale_h)
                 
                 boxes.append([left, top, width, height])
                 scores.append(float(filtered_scores[i]))
                 class_ids.append(filtered_classes[i])
 
-        # 5. NMS (แก้กล่องซ้อน)
+        # 6. NMS
         indices = cv2.dnn.NMSBoxes(boxes, scores, self.conf_thres, self.iou_thres)
         
         final_boxes = []
         if len(indices) > 0:
             for i in indices.flatten():
                 x, y, w, h = boxes[i]
-                # Clip ให้อยู่ในหน้าจอ
-                x = max(0, x)
-                y = max(0, y)
                 final_boxes.append((x, y, x+w, y+h))
                 
         return final_boxes
 
     def get_crop(self, frame, box):
         x1, y1, x2, y2 = box
+        # กัน Crop หลุดขอบ
+        h, w = frame.shape[:2]
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
         return frame[y1:y2, x1:x2]
 
 # ==========================================
@@ -129,6 +134,7 @@ class WebcamStream:
         print("📷 Camera: HD 720p Mode")
         try:
             self.picam2 = Picamera2()
+            # ใช้ RGB888
             config = self.picam2.create_preview_configuration(
                 main={"size": (1280, 720), "format": "RGB888"},
                 controls={"FrameDurationLimits": (16666, 16666)}
@@ -180,7 +186,7 @@ class AsyncDetector:
         return self.verified_drugs, self.latest_boxes
 
     def run(self):
-        print("🧠 Fast AI Worker Running...")
+        print("🧠 AI Worker Running...")
         while self.running:
             frame_to_process = None
             with self.lock:
@@ -191,23 +197,23 @@ class AsyncDetector:
             if frame_to_process is not None:
                 h, w = frame_to_process.shape[:2]
                 
-                # 1. Detect
                 boxes = self.yolo.detect(frame_to_process)
                 
-                # 2. Filter & Sort
+                # Filter & Sort
                 valid_boxes = []
-                self.latest_boxes = boxes # Send to UI
+                self.latest_boxes = boxes
                 
                 for box in boxes:
                     x1, y1, x2, y2 = box
                     area = (x2-x1)*(y2-y1)
-                    if area > (w*h * 0.01): # Min Area 1%
+                    # กรองจุดเล็กจัดๆ ออก (noise)
+                    if area > (w*h * 0.005): 
                          valid_boxes.append((area, box))
                 
                 valid_boxes.sort(key=lambda x: x[0], reverse=True)
                 target_boxes = valid_boxes[:1]
 
-                # 3. SIFT
+                # SIFT
                 current_found = set()
                 for _, box in target_boxes:
                     crop_img = self.yolo.get_crop(frame_to_process, box)
@@ -231,8 +237,8 @@ def draw_ui(img, patient_info, found_set, boxes, fps):
     # Dots
     for (x1, y1, x2, y2) in boxes:
         cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
-        cv2.circle(img, (cx, cy), 6, (50, 255, 50), -1)
-        cv2.circle(img, (cx, cy), 7, (0, 0, 0), 1)
+        cv2.circle(img, (cx, cy), 8, (0, 255, 0), -1) # จุดเขียว
+        cv2.circle(img, (cx, cy), 10, (255, 255, 255), 2) # ขอบขาว
 
     # Info
     try:
@@ -266,7 +272,7 @@ def draw_ui(img, patient_info, found_set, boxes, fps):
 # 🚀 MAIN
 # ==========================================
 def main():
-    print("🚀 Starting PillTrack (Auto-Fix Shape Mode)...")
+    print("🚀 Starting PillTrack (Auto-Scale Fix)...")
     
     if config.MODEL_YOLO_PATH.endswith('.pt'):
         model_path = config.MODEL_YOLO_PATH.replace('.pt', '.onnx')
