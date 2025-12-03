@@ -31,7 +31,7 @@ def get_cpu_temperature():
         return 0.0
 
 # ==========================================
-# 📷 WEBCAM STREAM (60 FPS / RGB888)
+# 📷 WEBCAM STREAM (HD 720p @ 60FPS)
 # ==========================================
 class WebcamStream:
     def __init__(self):
@@ -41,17 +41,21 @@ class WebcamStream:
         self.picam2 = None
 
     def start(self):
-        print("📷 Initializing Picamera2 (60 FPS Mode)...")
+        print("📷 Initializing Picamera2 (HD Mode)...")
         try:
             self.picam2 = Picamera2()
+            
+            # ✅ ปรับเป็น 1280x720 (HD)
+            # ภาพบนจอจะชัดขึ้นมาก แต่ยังรักษา 60 FPS ไหวบน Pi 5
             config = self.picam2.create_preview_configuration(
                 main={"size": (1280, 720), "format": "RGB888"},
                 controls={"FrameDurationLimits": (16666, 16666)} 
             )
             self.picam2.configure(config)
             self.picam2.start()
+            
             time.sleep(2.0)
-            print("✅ Camera Ready!")
+            print("✅ Camera Ready (1280x720)!")
         except Exception as e:
             print(f"❌ Camera Init Failed: {e}")
             self.stopped = True
@@ -116,16 +120,19 @@ class AsyncDetector:
             
             with self.lock:
                 if self.latest_frame is not None:
+                    # ตรงนี้เรารับภาพ 1280x720 มา
                     frame_to_process = self.latest_frame
                     self.latest_frame = None
 
             if frame_to_process is not None:
                 h, w = frame_to_process.shape[:2]
                 
-                # 1. YOLO Detect (Internal Use Only)
-                results = self.yolo.detect(frame_to_process, conf=0.6, iou=0.45, agnostic_nms=True, max_det=5, imgsz=320)
+                # 1. YOLO Detect
+                # imgsz=320 สำคัญมาก! มันบอก YOLO ว่า "ย่อภาพให้เหลือ 320 นะก่อนตรวจ"
+                # ดังนั้นต่อให้ส่ง 4K มา มันก็ตรวจเร็วเท่าเดิม (แต่อาจจะเสียเวลาส่งข้อมูลนิดหน่อย)
+                results = self.yolo.detect(frame_to_process, conf=0.25, iou=0.45, agnostic_nms=True, max_det=5, imgsz=320)
                 
-                # 2. Sort Boxes (Focus biggest)
+                # 2. Sort Boxes
                 valid_boxes = []
                 for i, box in enumerate(results.boxes):
                     x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
@@ -140,6 +147,7 @@ class AsyncDetector:
                 # 3. SIFT Logic
                 for _, box, idx in target_boxes:
                     mask = results.masks[idx] if results.masks else None
+                    # Crop ภาพยาจากภาพ HD (ทำให้ SIFT เห็นลายละเอียดชัดขึ้นด้วย!)
                     crop_img = self.yolo.get_crop(frame_to_process, box, mask)
                     
                     match_result = self.db.search(self.identifier, crop_img, target_drugs=self.patient_drugs)
@@ -156,26 +164,24 @@ class AsyncDetector:
         self.running = False
 
 # ==========================================
-# 🎨 UI DRAWING (Clean Mode + Temp)
+# 🎨 UI DRAWING
 # ==========================================
 def draw_ui(img, patient_info, found_set, fps):
     h, w = img.shape[:2]
     
-    # ❌ Removed Box Drawing Loop (ตามที่ขอ)
-
     # 1. Draw FPS & Temp (Top Left)
     temp = get_cpu_temperature()
-    # สีเขียวปกติ, ถ้าเกิน 80 องศาเป็นสีแดง
     temp_color = (0, 255, 0) if temp < 80 else (255, 0, 0)
     
-    cv2.putText(img, f"FPS: {int(fps)}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-    cv2.putText(img, f"TEMP: {temp:.1f} C", (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, temp_color, 2)
+    # ปรับขนาดตัวอักษรนิดหน่อยให้เข้ากับจอ HD
+    cv2.putText(img, f"FPS: {int(fps)}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+    cv2.putText(img, f"TEMP: {temp:.1f} C", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.0, temp_color, 2)
 
-    # 2. Patient Info Panel
-    panel_w = 280
-    panel_h = 100 + (len(patient_info['drugs']) * 30)
-    x1, y1 = w - panel_w - 10, 10
-    x2, y2 = w - 10, 10 + panel_h
+    # 2. Patient Info Panel (ปรับตำแหน่งให้ชิดขวาของจอ HD)
+    panel_w = 300
+    panel_h = 100 + (len(patient_info['drugs']) * 35)
+    x1, y1 = w - panel_w - 20, 20
+    x2, y2 = w - 20, 20 + panel_h
     
     overlay = img.copy()
     cv2.rectangle(overlay, (x1, y1), (x2, y2), (20, 20, 20), -1)
@@ -183,12 +189,12 @@ def draw_ui(img, patient_info, found_set, fps):
     cv2.rectangle(img, (x1, y1), (x2, y2), (100, 100, 100), 2)
     
     font = cv2.FONT_HERSHEY_SIMPLEX
-    cv2.putText(img, "PATIENT INFO", (x1+10, y1+25), font, 0.6, (0, 255, 255), 2)
-    cv2.line(img, (x1+10, y1+35), (x2-10, y1+35), (100, 100, 100), 1)
-    cv2.putText(img, f"HN: {patient_info['hn']}", (x1+10, y1+55), font, 0.5, (255, 255, 255), 1)
-    cv2.putText(img, f"{patient_info['name']}", (x1+10, y1+75), font, 0.5, (255, 255, 255), 1)
+    cv2.putText(img, "PATIENT INFO", (x1+10, y1+30), font, 0.7, (0, 255, 255), 2)
+    cv2.line(img, (x1+10, y1+40), (x2-10, y1+40), (100, 100, 100), 1)
+    cv2.putText(img, f"HN: {patient_info['hn']}", (x1+10, y1+65), font, 0.6, (255, 255, 255), 1)
+    cv2.putText(img, f"{patient_info['name']}", (x1+10, y1+90), font, 0.6, (255, 255, 255), 1)
     
-    start_y = y1 + 105
+    start_y = y1 + 125
     for drug in patient_info['drugs']:
         is_found = False
         for found in found_set:
@@ -197,14 +203,14 @@ def draw_ui(img, patient_info, found_set, fps):
                 break
         icon = "[/]" if is_found else "[ ]"
         color = (0, 255, 0) if is_found else (150, 150, 150)
-        cv2.putText(img, f"{icon} {drug}", (x1+10, start_y), font, 0.5, color, 1)
-        start_y += 25
+        cv2.putText(img, f"{icon} {drug}", (x1+10, start_y), font, 0.6, color, 1)
+        start_y += 30
 
 # ==========================================
 # 🚀 MAIN LOOP
 # ==========================================
 def main():
-    print("🚀 Starting PillTrack (Clean UI + Temp)...")
+    print("🚀 Starting PillTrack (HD 720p Mode)...")
     
     # 1. Setup
     def get_optimized_model_path(path):
@@ -233,6 +239,7 @@ def main():
     
     window_name = "PillTrack"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    # คำสั่งนี้จะดึงภาพ HD ให้เต็มจอ Monitor อัตโนมัติ
     cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
     prev_time = 0
@@ -242,22 +249,21 @@ def main():
             frame = vs.read()
             if frame is None: continue
             
-            # Send to AI
+            # ส่งภาพ HD ไปให้ AI (AI จะย่อเองภายใน)
             ai_worker.update_frame(frame)
 
-            # Get Results (เอาแค่รายชื่อยา ไม่เอากล่อง)
+            # รับผลลัพธ์
             found_drugs = ai_worker.get_verified_drugs()
             
-            # Calc FPS
             curr_time = time.time()
             fps = 1 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 0
             prev_time = curr_time
             
-            # Draw UI (Clean: No Boxes)
+            # วาด UI บนภาพ HD
             ui_frame = frame.copy()
             draw_ui(ui_frame, patient_info, found_drugs, fps)
 
-            # Display
+            # แสดงผล
             cv2.imshow(window_name, ui_frame)
             if cv2.waitKey(1) == ord('q'): break
             
