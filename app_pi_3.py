@@ -120,26 +120,31 @@ class AsyncDetector:
             
             with self.lock:
                 if self.latest_frame is not None:
-                    # ตรงนี้เรารับภาพ 1280x720 มา
                     frame_to_process = self.latest_frame
                     self.latest_frame = None
 
             if frame_to_process is not None:
                 h, w = frame_to_process.shape[:2]
                 
-                # 🟢 START: LOGIC กรองยาที่เจอแล้ว
-                # คำนวณยาที่เหลือที่ต้องหา: ยาทั้งหมด - ยาที่เจอแล้ว
+                # 🧪 LOGIC กรองยาที่เจอแล้ว
                 drugs_to_find = list(set(self.patient_drugs) - self.verified_drugs)
                 
-                # ถ้าหายาครบแล้ว (ไม่ต้องรัน SIFT ต่อ)
+                # ถ้าหายาครบแล้ว
                 if not drugs_to_find and self.verified_drugs:
                     time.sleep(0.1) 
                     continue
-                # 🟢 END: LOGIC กรองยาที่เจอแล้ว
+                
+                # 🟢 NEW: ปรับค่าเกณฑ์ความแม่นยำ (Match Threshold)
+                # * ค่า Default (ผ่อนปรน): 0.70
+                # * ถ้าเหลือยาที่ต้องหาน้อยกว่า/เท่ากับ 2 ชนิด (เข้มงวด): 0.60
+                match_threshold = 0.70 
+
+                if len(drugs_to_find) <= 2:
+                    match_threshold = 0.60 
+                # 🟢 END: ปรับค่าเกณฑ์
                 
                 # 1. YOLO Detect
-                # imgsz=320 สำคัญมาก! มันบอก YOLO ว่า "ย่อภาพให้เหลือ 320 นะก่อนตรวจ"
-                results = self.yolo.detect(frame_to_process, conf=0.5, iou=0.45, agnostic_nms=True, max_det=5, imgsz=320)
+                results = self.yolo.detect(frame_to_process, conf=0.25, iou=0.45, agnostic_nms=True, max_det=5, imgsz=320)
                 
                 # 2. Sort Boxes
                 valid_boxes = []
@@ -156,11 +161,17 @@ class AsyncDetector:
                 # 3. SIFT Logic
                 for _, box, idx in target_boxes:
                     mask = results.masks[idx] if results.masks else None
-                    # Crop ภาพยาจากภาพ HD (ทำให้ SIFT เห็นลายละเอียดชัดขึ้นด้วย!)
                     crop_img = self.yolo.get_crop(frame_to_process, box, mask)
                     
-                    # 🟢 CHANGE: ส่งเฉพาะ drugs_to_find ไปให้ SIFT เทียบ
-                    match_result = self.db.search(self.identifier, crop_img, target_drugs=drugs_to_find)
+                    # 🟢 CHANGE: ส่ง drugs_to_find และ match_threshold ไปให้ SIFT เทียบ
+                    # (***หมายเหตุ: ต้องมั่นใจว่า self.db.search ถูกแก้ไขให้รับและใช้ค่า sift_ratio_threshold ได้***)
+                    match_result = self.db.search(
+                        self.identifier, 
+                        crop_img, 
+                        target_drugs=drugs_to_find,
+                        sift_ratio_threshold=match_threshold 
+                    )
+                    
                     if match_result:
                         current_found.add(match_result['name'])
                 
