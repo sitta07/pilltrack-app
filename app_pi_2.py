@@ -4,8 +4,9 @@ import os
 import numpy as np
 import threading
 import sys
+import queue
 
-# ✅ FIX: แก้ปัญหาเปิดหน้าต่างไม่ขึ้นบน Raspberry Pi OS (Wayland)
+# ✅ FIX Display
 os.environ["QT_QPA_PLATFORM"] = "xcb"
 
 # Import Modules
@@ -14,16 +15,13 @@ try:
     from engines import YOLODetector, SIFTIdentifier
     from database import VectorDB
     from his_mock import HISSystem
-    # ✅ Import Picamera2 (บังคับใช้ตัวนี้สำหรับ RPi 5)
     from picamera2 import Picamera2
 except ImportError as e:
-    print(f"❌ Error importing modules: {e}")
-    if "picamera2" in str(e):
-        print("👉 คำแนะนำ: คุณต้องรันใน venv ที่มี access system packages (--system-site-packages)")
+    print(f"❌ Error: {e}")
     sys.exit(1)
 
 # ==========================================
-# 📷 WEBCAM STREAM (Picamera2 - RGB888)
+# 📷 WEBCAM STREAM (60 FPS TUNED)
 # ==========================================
 class WebcamStream:
     def __init__(self):
@@ -33,52 +31,43 @@ class WebcamStream:
         self.picam2 = None
 
     def start(self):
-        print("📷 Initializing Picamera2 (RGB888 Mode)...")
+        print("📷 Initializing Picamera2 (60 FPS Mode)...")
         try:
             self.picam2 = Picamera2()
             
-            # ✅ Config: ใช้ RGB888 ตามที่ขอ
+            # ✅ Config: Force 60 FPS
+            # FrameDurationLimits: (min_duration, max_duration) in microseconds
+            # 1,000,000 / 60 = 16666 us
             config = self.picam2.create_preview_configuration(
-                main={"size": (640, 480), "format": "RGB888"}
+                main={"size": (640, 480), "format": "RGB888"},
+                controls={"FrameDurationLimits": (16666, 16666)} 
             )
             self.picam2.configure(config)
             self.picam2.start()
             
-            print("⏳ Warming up camera (2s)...")
             time.sleep(2.0)
+            print("✅ Camera Running @ 60 FPS!")
             
-            # Test capture
-            self.frame = self.picam2.capture_array()
-            if self.frame is not None:
-                self.grabbed = True
-                print("✅ Camera Started Successfully!")
-            else:
-                print("❌ Camera started but returned empty frame.")
-                self.stopped = True
-
         except Exception as e:
             print(f"❌ Camera Init Failed: {e}")
             self.stopped = True
             
-        # Start Thread
         threading.Thread(target=self.update, args=(), daemon=True).start()
         return self
 
     def update(self):
         while not self.stopped:
             try:
-                # Capture RGB Array
+                # Capture แบบต่อเนื่องให้เร็วที่สุด
                 frame = self.picam2.capture_array()
                 if frame is not None:
                     self.frame = frame
                     self.grabbed = True
                 else:
                     self.stopped = True
-            except Exception as e:
+            except:
                 self.stopped = True
-            
-            # Sleep เล็กน้อยลดภาระ CPU
-            time.sleep(0.001)
+            # ไม่ต้อง Sleep ตรงนี้เพื่อให้ได้ FPS สูงสุด
 
     def read(self):
         return self.frame
@@ -93,90 +82,93 @@ class WebcamStream:
                 pass
 
 # ==========================================
-# 🖱️ UI & STATE MANAGEMENT
+# 🧠 ASYNC AI WORKER (แยก AI ไปรันอีกเลน)
 # ==========================================
-STATE_MENU = 0
-STATE_DOUBLE_CHECK = 1
-STATE_COUNTING = 2
-STATE_SETTINGS = 3
+class AsyncDetector:
+    def __init__(self, model_path, patient_drugs):
+        self.yolo = YOLODetector(model_path)
+        self.identifier = SIFTIdentifier()
+        self.db = VectorDB()
+        self.patient_drugs = patient_drugs
+        
+        self.latest_frame = None
+        self.verified_drugs = set()
+        self.running = True
+        self.lock = threading.Lock()
 
-current_state = STATE_MENU
-active_buttons = []
-last_click_time = 0
-verified_drugs = set()
-zoom_level = 1.0 
+    def start(self):
+        threading.Thread(target=self.run, daemon=True).start()
+        return self
 
-class Button:
-    def __init__(self, x, y, w, h, text, color=(50, 50, 50), text_color=(255, 255, 255), action=None):
-        self.rect = (x, y, w, h)
-        self.text = text
-        self.color = color
-        self.text_color = text_color
-        self.action = action
+    def update_frame(self, frame):
+        # อัปเดตภาพล่าสุดที่จะให้ AI ตรวจ (Overrite ของเก่าได้เลยถ้า AI ทำไม่ทัน)
+        with self.lock:
+            self.latest_frame = frame.copy()
 
-    def draw(self, img):
-        x, y, w, h = self.rect
-        cv2.rectangle(img, (x+5, y+5), (x+w+5, y+h+5), (20, 20, 20), -1)
-        cv2.rectangle(img, (x, y), (x+w, y+h), self.color, -1)
-        cv2.rectangle(img, (x, y), (x+w, y+h), (200, 200, 200), 2)
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        scale = 0.6
-        thickness = 2
-        (fw, fh), _ = cv2.getTextSize(self.text, font, scale, thickness)
-        tx = x + (w - fw) // 2
-        ty = y + (h + fh) // 2
-        cv2.putText(img, self.text, (tx, ty), font, scale, self.text_color, thickness)
+    def get_verified_drugs(self):
+        return self.verified_drugs
 
-    def is_clicked(self, mx, my):
-        x, y, w, h = self.rect
-        return x <= mx <= x+w and y <= my <= y+h
+    def run(self):
+        print("🧠 AI Worker Started (Background)...")
+        while self.running:
+            frame_to_process = None
+            
+            with self.lock:
+                if self.latest_frame is not None:
+                    frame_to_process = self.latest_frame
+                    self.latest_frame = None # Clear buffer
 
-def mouse_callback(event, x, y, flags, param):
-    global last_click_time
-    if event == cv2.EVENT_LBUTTONDOWN:
-        if time.time() - last_click_time < 0.2: return 
-        last_click_time = time.time()
-        for btn in active_buttons:
-            if btn.is_clicked(x, y):
-                if btn.action: btn.action()
-                return
+            if frame_to_process is not None:
+                # 1. YOLO Detect (No Draw)
+                results = self.yolo.detect(frame_to_process, conf=0.7, iou=0.45, agnostic_nms=True, max_det=5, imgsz=320)
+                
+                # 2. SIFT Check
+                h, w = frame_to_process.shape[:2]
+                current_found = set()
+                
+                for i, box in enumerate(results.boxes):
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
+                    if (x2-x1)*(y2-y1) < (w*h * 0.01): continue
+                    
+                    mask = results.masks[i] if results.masks else None
+                    crop_img = self.yolo.get_crop(frame_to_process, box, mask)
+                    
+                    match_result = self.db.search(self.identifier, crop_img, target_drugs=self.patient_drugs)
+                    if match_result:
+                        current_found.add(match_result['name'])
+                
+                # Update verified set
+                if current_found:
+                    self.verified_drugs.update(current_found)
+            
+            else:
+                time.sleep(0.01) # ถ้าไม่มีภาพใหม่ให้นอนรอแป๊บ
 
-# Actions
-def go_menu(): global current_state; current_state = STATE_MENU
-def go_check(): global current_state; current_state = STATE_DOUBLE_CHECK
-def go_count(): global current_state; current_state = STATE_COUNTING
-def go_settings(): global current_state; current_state = STATE_SETTINGS
-def do_update(): print("🔄 Model Updating..."); time.sleep(0.5); print("✅ Done")
+    def stop(self):
+        self.running = False
 
-def zoom_in():
-    global zoom_level
-    if zoom_level < 3.0: zoom_level += 0.5
-def zoom_out():
-    global zoom_level
-    if zoom_level > 1.0: zoom_level -= 0.5
-
-def apply_zoom(img, scale=1.0):
-    if scale <= 1.0: return img
+# ==========================================
+# 🎨 UI DRAWING (Clean Mode)
+# ==========================================
+def draw_ui(img, patient_info, found_set, fps):
     h, w = img.shape[:2]
-    new_w, new_h = int(w / scale), int(h / scale)
-    cx, cy = w // 2, h // 2
-    x1, y1 = max(0, cx - new_w // 2), max(0, cy - new_h // 2)
-    x2, y2 = min(w, x1 + new_w), min(h, y1 + new_h)
-    cropped = img[y1:y2, x1:x2]
-    return cv2.resize(cropped, (w, h), interpolation=cv2.INTER_LINEAR)
+    
+    # 1. Draw FPS (Top Left)
+    cv2.putText(img, f"FPS: {int(fps)}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-def draw_patient_panel(img, patient_info, found_set):
-    h, w = img.shape[:2]
+    # 2. Draw Patient Panel (Right Side)
     panel_w = 280
     panel_h = 100 + (len(patient_info['drugs']) * 30)
     x1, y1 = w - panel_w - 10, 10
     x2, y2 = w - 10, 10 + panel_h
     
+    # Background
     overlay = img.copy()
     cv2.rectangle(overlay, (x1, y1), (x2, y2), (20, 20, 20), -1)
     cv2.addWeighted(overlay, 0.8, img, 0.2, 0, img)
     cv2.rectangle(img, (x1, y1), (x2, y2), (100, 100, 100), 2)
     
+    # Text
     font = cv2.FONT_HERSHEY_SIMPLEX
     cv2.putText(img, "PATIENT INFO", (x1+10, y1+25), font, 0.6, (0, 255, 255), 2)
     cv2.line(img, (x1+10, y1+35), (x2-10, y1+35), (100, 100, 100), 1)
@@ -199,31 +191,15 @@ def draw_patient_panel(img, patient_info, found_set):
 # 🚀 MAIN LOOP
 # ==========================================
 def main():
-    global active_buttons, verified_drugs, zoom_level
-    print("🚀 Starting PillTrack UI on Raspberry Pi 5...")
+    print("🚀 Starting PillTrack: 60 FPS Mode...")
     
-    # 1. LOAD ENGINES (Auto Switch to ONNX for Speed)
+    # 1. Setup Models & Data
     def get_optimized_model_path(path):
         onnx_path = path.replace('.pt', '.onnx')
-        if os.path.exists(onnx_path):
-            print(f"⚡ Using ONNX Model (Faster CPU): {onnx_path}")
-            return onnx_path
-        return path
+        return onnx_path if os.path.exists(onnx_path) else path
 
-    main_model_path = get_optimized_model_path(config.MODEL_YOLO_PATH)
-    yolo_main = YOLODetector(main_model_path)
-
-    count_model_path = get_optimized_model_path(config.MODEL_COUNT_PATH)
-    if os.path.exists(count_model_path) or os.path.exists(count_model_path.replace('.onnx','.pt')):
-        yolo_counter = YOLODetector(count_model_path)
-    else:
-        yolo_counter = yolo_main
-
-    identifier = SIFTIdentifier()
-    db = VectorDB()
+    model_path = get_optimized_model_path(config.MODEL_YOLO_PATH)
     his = HISSystem()
-    
-    # Mock Data
     patient_data = his.get_patient_info("HN001")
     patient_info = {
         "hn": "HN001",
@@ -231,123 +207,56 @@ def main():
         "drugs": patient_data['drugs']
     }
 
-    # Start Camera
+    # 2. Start Async AI Worker
+    ai_worker = AsyncDetector(model_path, patient_info['drugs']).start()
+
+    # 3. Start Camera
     vs = WebcamStream().start()
     
     print("⏳ Waiting for camera feed...")
     while vs.read() is None:
         time.sleep(0.1)
-    print("✅ Camera Ready")
-
-    window_name = "PillTrack"
+    
+    window_name = "PillTrack (60 FPS)"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-    cv2.setMouseCallback(window_name, mouse_callback)
 
-    frame_count = 0
-    SIFT_SKIP_FRAMES = 10 # ลดภาระ CPU โดยการเช็คทุกๆ 10 เฟรมพอ
+    # FPS Calculation
+    prev_time = 0
+    curr_fps = 0
 
     try:
         while True:
-            # 1. รับภาพ RGB จากกล้อง
-            raw_rgb_frame = vs.read()
-            if raw_rgb_frame is None: continue
+            # 1. Get Frame (เร็วมาก)
+            frame = vs.read()
+            if frame is None: continue
             
-            # 2. ✅ แปลง RGB -> BGR ทันที
-            # เหตุผล: OpenCV และ YOLO (Standard) ชอบ BGR
-            # ถ้าไม่แปลง สีบนจอจะเพี้ยน (หน้าคนสีฟ้า)
-            frame_bgr = cv2.cvtColor(raw_rgb_frame, cv2.COLOR_RGB2BGR)
+            # 2. ส่งภาพไปให้ AI ประมวลผล (แบบไม่รอผลลัพธ์)
+            ai_worker.update_frame(frame)
 
-            # 3. Apply Zoom
-            if zoom_level > 1.0:
-                frame = apply_zoom(frame_bgr, zoom_level)
-            else:
-                frame = frame_bgr.copy()
-            
+            # 3. เตรียมภาพสำหรับแสดงผล (Raw RGB888)
             ui_frame = frame.copy()
-            h, w = ui_frame.shape[:2]
-            active_buttons = []
 
-            # --- STATE MACHINE ---
-            if current_state == STATE_MENU:
-                zoom_level = 1.0 
-                overlay = ui_frame.copy()
-                cv2.rectangle(overlay, (0, 0), (w, h), (0, 0, 0), -1)
-                cv2.addWeighted(overlay, 0.7, ui_frame, 0.3, 0, ui_frame)
-                
-                cv2.putText(ui_frame, "MAIN MENU", (w//2 - 100, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
-                
-                cx = (w - 300) // 2
-                btn1 = Button(cx, 150, 300, 80, "1. Double Check", (0, 100, 255), action=go_check)
-                btn2 = Button(cx, 250, 300, 80, "2. Count Pills", (0, 200, 0), action=go_count)
-                btn3 = Button(cx, 350, 300, 80, "3. Settings", (100, 100, 100), action=go_settings)
-                active_buttons = [btn1, btn2, btn3]
+            # 4. ดึงผลลัพธ์ล่าสุดจาก AI มาแสดง (เฉพาะ Panel Text ไม่วาดกล่อง)
+            found_drugs = ai_worker.get_verified_drugs()
+            
+            # คำนวณ FPS
+            curr_time = time.time()
+            fps = 1 / (curr_time - prev_time)
+            prev_time = curr_time
+            
+            # วาด UI
+            draw_ui(ui_frame, patient_info, found_drugs, fps)
 
-            elif current_state == STATE_DOUBLE_CHECK:
-                # ลด imgsz เหลือ 320 เพื่อความเร็ว
-                results = yolo_main.detect(frame, conf=0.7, iou=0.45, agnostic_nms=True, max_det=5, imgsz=320)
-                
-                if frame_count % SIFT_SKIP_FRAMES == 0:
-                    for i, box in enumerate(results.boxes):
-                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-                        # กรอง object เล็กเกินไป
-                        if (x2-x1)*(y2-y1) < (w*h * 0.01): continue
-                        
-                        mask = results.masks[i] if results.masks else None
-                        crop_img = yolo_main.get_crop(frame, box, mask)
-                        
-                        match_result = db.search(identifier, crop_img, target_drugs=patient_info['drugs'])
-                        if match_result:
-                            verified_drugs.add(match_result['name'])
-
-                draw_patient_panel(ui_frame, patient_info, verified_drugs)
-                back_btn = Button(20, h-70, 120, 50, "< BACK", (0, 0, 200), action=go_menu)
-                active_buttons = [back_btn]
-
-            elif current_state == STATE_COUNTING:
-                results = yolo_counter.detect(frame, conf=0.40, iou=0.40, agnostic_nms=True, max_det=100, imgsz=320)
-                
-                count = len(results.boxes)
-                for box in results.boxes:
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-                    cx, cy = (x1+x2)//2, (y1+y2)//2
-                    cv2.circle(ui_frame, (cx, cy), 4, (0, 255, 255), -1)
-                    cv2.circle(ui_frame, (cx, cy), 6, (0, 0, 0), 1)
-                
-                # Zoom & Count UI
-                zoom_in_btn = Button(w-70, h-140, 50, 50, "+", (0, 100, 0), action=zoom_in)
-                zoom_out_btn = Button(w-70, h-80, 50, 50, "-", (0, 0, 100), action=zoom_out)
-                cv2.putText(ui_frame, f"ZOOM: {zoom_level}x", (w-120, h-150), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-
-                cv2.rectangle(ui_frame, (w-200, 20), (w-20, 100), (30, 30, 30), -1)
-                cv2.putText(ui_frame, f"{count}", (w-160, 85), cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 255, 255), 4)
-                cv2.putText(ui_frame, "PILLS", (w-160, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-                
-                back_btn = Button(20, h-70, 120, 50, "< BACK", (0, 0, 200), action=go_menu)
-                active_buttons = [back_btn, zoom_in_btn, zoom_out_btn]
-
-            elif current_state == STATE_SETTINGS:
-                overlay = ui_frame.copy()
-                cv2.rectangle(overlay, (0, 0), (w, h), (30, 30, 30), -1)
-                cv2.addWeighted(overlay, 0.9, ui_frame, 0.1, 0, ui_frame)
-                
-                cv2.putText(ui_frame, "SETTINGS", (w//2 - 80, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
-                update_btn = Button((w-300)//2, 200, 300, 80, "UPDATE MODEL", (200, 150, 0), action=do_update)
-                back_btn = Button(20, h-70, 120, 50, "< BACK", (0, 0, 200), action=go_menu)
-                active_buttons = [update_btn, back_btn]
-
-            # Draw Buttons & Display
-            for btn in active_buttons:
-                btn.draw(ui_frame)
-
+            # 5. Display (Smooth!)
             cv2.imshow(window_name, ui_frame)
             if cv2.waitKey(1) == ord('q'): break
-            frame_count += 1
 
     except KeyboardInterrupt:
         print("\n🛑 Stopping...")
 
     finally:
+        ai_worker.stop()
         vs.stop()
         cv2.destroyAllWindows()
         print("👋 Bye Bye!")
