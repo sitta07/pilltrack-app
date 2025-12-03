@@ -4,24 +4,24 @@ import os
 import numpy as np
 import threading
 import sys
-import queue
 
-# ✅ FIX Display
+# ✅ 1. FIX Display on Raspberry Pi OS (Wayland)
 os.environ["QT_QPA_PLATFORM"] = "xcb"
 
-# Import Modules
+# Import Custom Modules
 try:
     import config
     from engines import YOLODetector, SIFTIdentifier
     from database import VectorDB
     from his_mock import HISSystem
+    # บังคับใช้ Picamera2
     from picamera2 import Picamera2
 except ImportError as e:
-    print(f"❌ Error: {e}")
+    print(f"❌ Error importing modules: {e}")
     sys.exit(1)
 
 # ==========================================
-# 📷 WEBCAM STREAM (60 FPS TUNED)
+# 📷 WEBCAM STREAM (60 FPS / RGB888)
 # ==========================================
 class WebcamStream:
     def __init__(self):
@@ -35,9 +35,8 @@ class WebcamStream:
         try:
             self.picam2 = Picamera2()
             
-            # ✅ Config: Force 60 FPS
-            # FrameDurationLimits: (min_duration, max_duration) in microseconds
-            # 1,000,000 / 60 = 16666 us
+            # ✅ Config: Force 60 FPS & RGB888
+            # FrameDurationLimits: (16666, 16666) microseconds = 1/60 sec
             config = self.picam2.create_preview_configuration(
                 main={"size": (640, 480), "format": "RGB888"},
                 controls={"FrameDurationLimits": (16666, 16666)} 
@@ -45,8 +44,8 @@ class WebcamStream:
             self.picam2.configure(config)
             self.picam2.start()
             
-            time.sleep(2.0)
-            print("✅ Camera Running @ 60 FPS!")
+            time.sleep(2.0) # Warm up
+            print("✅ Camera Running @ 60 FPS (RGB888)!")
             
         except Exception as e:
             print(f"❌ Camera Init Failed: {e}")
@@ -58,7 +57,7 @@ class WebcamStream:
     def update(self):
         while not self.stopped:
             try:
-                # Capture แบบต่อเนื่องให้เร็วที่สุด
+                # Capture อย่างต่อเนื่อง
                 frame = self.picam2.capture_array()
                 if frame is not None:
                     self.frame = frame
@@ -67,7 +66,7 @@ class WebcamStream:
                     self.stopped = True
             except:
                 self.stopped = True
-            # ไม่ต้อง Sleep ตรงนี้เพื่อให้ได้ FPS สูงสุด
+            # ไม่ Sleep ตรงนี้ เพื่อรีด FPS ให้สุด
 
     def read(self):
         return self.frame
@@ -82,7 +81,7 @@ class WebcamStream:
                 pass
 
 # ==========================================
-# 🧠 ASYNC AI WORKER (แยก AI ไปรันอีกเลน)
+# 🧠 ASYNC AI WORKER (Fast Logic)
 # ==========================================
 class AsyncDetector:
     def __init__(self, model_path, patient_drugs):
@@ -101,7 +100,7 @@ class AsyncDetector:
         return self
 
     def update_frame(self, frame):
-        # อัปเดตภาพล่าสุดที่จะให้ AI ตรวจ (Overrite ของเก่าได้เลยถ้า AI ทำไม่ทัน)
+        # อัปเดตภาพล่าสุดเข้า Buffer
         with self.lock:
             self.latest_frame = frame.copy()
 
@@ -109,7 +108,7 @@ class AsyncDetector:
         return self.verified_drugs
 
     def run(self):
-        print("🧠 AI Worker Started (Background)...")
+        print("🧠 AI Worker Started (Smart Focus)...")
         while self.running:
             frame_to_process = None
             
@@ -119,56 +118,65 @@ class AsyncDetector:
                     self.latest_frame = None # Clear buffer
 
             if frame_to_process is not None:
-                # 1. YOLO Detect (No Draw)
-                results = self.yolo.detect(frame_to_process, conf=0.4, iou=0.45, agnostic_nms=True, max_det=5, imgsz=320)
-                
-                # 2. SIFT Check
                 h, w = frame_to_process.shape[:2]
-                current_found = set()
                 
+                # 1. YOLO Detect
+                results = self.yolo.detect(frame_to_process, conf=0.6, iou=0.45, agnostic_nms=True, max_det=5, imgsz=320)
+                
+                # 2. Smart Sorting: หา "ยาเม็ดใหญ่ที่สุด" (Focus Object)
+                valid_boxes = []
                 for i, box in enumerate(results.boxes):
                     x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-                    if (x2-x1)*(y2-y1) < (w*h * 0.01): continue
-                    
-                    mask = results.masks[i] if results.masks else None
+                    area = (x2-x1)*(y2-y1)
+                    # ต้องใหญ่กว่า 2% ของจอ ถึงจะตรวจ (กัน Noise)
+                    if area > (w*h * 0.02): 
+                        valid_boxes.append((area, box, i))
+                
+                # เรียงจากใหญ่ -> เล็ก แล้วเอาแค่ 1 อันดับแรก
+                valid_boxes.sort(key=lambda x: x[0], reverse=True)
+                target_boxes = valid_boxes[:1] 
+
+                current_found = set()
+                
+                # 3. SIFT Verification (เฉพาะตัวที่คัดมา)
+                for _, box, idx in target_boxes:
+                    mask = results.masks[idx] if results.masks else None
                     crop_img = self.yolo.get_crop(frame_to_process, box, mask)
                     
                     match_result = self.db.search(self.identifier, crop_img, target_drugs=self.patient_drugs)
                     if match_result:
                         current_found.add(match_result['name'])
                 
-                # Update verified set
                 if current_found:
                     self.verified_drugs.update(current_found)
             
             else:
-                time.sleep(0.01) # ถ้าไม่มีภาพใหม่ให้นอนรอแป๊บ
+                # ถ้าไม่มีภาพใหม่ ให้นอนรอนานหน่อย คืน CPU ให้ Main Thread
+                time.sleep(0.01)
 
     def stop(self):
         self.running = False
 
 # ==========================================
-# 🎨 UI DRAWING (Clean Mode)
+# 🎨 UI DRAWING
 # ==========================================
-def draw_ui(img, patient_info, found_set, fps):
+def draw_patient_panel(img, patient_info, found_set, fps):
     h, w = img.shape[:2]
     
-    # 1. Draw FPS (Top Left)
+    # Draw FPS
     cv2.putText(img, f"FPS: {int(fps)}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-    # 2. Draw Patient Panel (Right Side)
+    # Patient Info Panel
     panel_w = 280
     panel_h = 100 + (len(patient_info['drugs']) * 30)
     x1, y1 = w - panel_w - 10, 10
     x2, y2 = w - 10, 10 + panel_h
     
-    # Background
     overlay = img.copy()
     cv2.rectangle(overlay, (x1, y1), (x2, y2), (20, 20, 20), -1)
     cv2.addWeighted(overlay, 0.8, img, 0.2, 0, img)
     cv2.rectangle(img, (x1, y1), (x2, y2), (100, 100, 100), 2)
     
-    # Text
     font = cv2.FONT_HERSHEY_SIMPLEX
     cv2.putText(img, "PATIENT INFO", (x1+10, y1+25), font, 0.6, (0, 255, 255), 2)
     cv2.line(img, (x1+10, y1+35), (x2-10, y1+35), (100, 100, 100), 1)
@@ -191,12 +199,15 @@ def draw_ui(img, patient_info, found_set, fps):
 # 🚀 MAIN LOOP
 # ==========================================
 def main():
-    print("🚀 Starting PillTrack: 60 FPS Mode...")
+    print("🚀 Starting PillTrack: Double Check Mode (High Performance)...")
     
-    # 1. Setup Models & Data
+    # 1. Setup Models (Auto ONNX)
     def get_optimized_model_path(path):
         onnx_path = path.replace('.pt', '.onnx')
-        return onnx_path if os.path.exists(onnx_path) else path
+        if os.path.exists(onnx_path):
+            print(f"⚡ Using ONNX Model: {onnx_path}")
+            return onnx_path
+        return path
 
     model_path = get_optimized_model_path(config.MODEL_YOLO_PATH)
     his = HISSystem()
@@ -217,40 +228,43 @@ def main():
     while vs.read() is None:
         time.sleep(0.1)
     
-    window_name = "PillTrack (60 FPS)"
+    window_name = "PillTrack"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
-    # FPS Calculation
     prev_time = 0
-    curr_fps = 0
-
+    
     try:
         while True:
-            # 1. Get Frame (เร็วมาก)
+            # 1. Get RAW Frame (Fast)
             frame = vs.read()
             if frame is None: continue
             
-            # 2. ส่งภาพไปให้ AI ประมวลผล (แบบไม่รอผลลัพธ์)
+            # 2. Send to AI (Non-blocking)
             ai_worker.update_frame(frame)
 
-            # 3. เตรียมภาพสำหรับแสดงผล (Raw RGB888)
-            ui_frame = frame.copy()
+            # 3. Prepare UI Frame
+            ui_frame = frame.copy() # RGB888 Direct
 
-            # 4. ดึงผลลัพธ์ล่าสุดจาก AI มาแสดง (เฉพาะ Panel Text ไม่วาดกล่อง)
+            # 4. Get AI Results & Draw UI
             found_drugs = ai_worker.get_verified_drugs()
             
-            # คำนวณ FPS
+            # Calc FPS
             curr_time = time.time()
-            fps = 1 / (curr_time - prev_time)
+            fps = 1 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 0
             prev_time = curr_time
             
-            # วาด UI
-            draw_ui(ui_frame, patient_info, found_drugs, fps)
+            # Draw (No Boxes, Just Panel)
+            draw_patient_panel(ui_frame, patient_info, found_drugs, fps)
 
-            # 5. Display (Smooth!)
+            # 5. Display
             cv2.imshow(window_name, ui_frame)
+            
             if cv2.waitKey(1) == ord('q'): break
+            
+            # ✅ IMPORTANT: Sleep 0.01s เพื่อให้ CPU ว่างไปประมวลผล AI บ้าง
+            # (ถ้าไม่ใส่ตรงนี้ UI จะลื่นแต่ AI จะอืด)
+            time.sleep(0.01)
 
     except KeyboardInterrupt:
         print("\n🛑 Stopping...")
@@ -259,7 +273,7 @@ def main():
         ai_worker.stop()
         vs.stop()
         cv2.destroyAllWindows()
-        print("Closed Program Now")
+        print("👋 Bye Bye!")
 
 if __name__ == "__main__":
     main()
