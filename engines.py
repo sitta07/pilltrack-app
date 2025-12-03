@@ -6,6 +6,7 @@ from ultralytics import YOLO
 from torchvision import transforms, models
 from PIL import Image
 import config
+import os
 
 class DrugFeatureExtractor(nn.Module):
     """Neural Network สำหรับสกัด features จากภาพยา"""
@@ -271,7 +272,6 @@ class HybridMatcher:
     """Matcher ที่ใช้ทั้ง Neural Network และ SIFT"""
     def __init__(self, db_path, nn_model_path=None):
         import pickle
-        import os
         
         print(f"🔍 Loading Hybrid Database from {db_path}...")
         
@@ -341,13 +341,63 @@ class HybridMatcher:
                     self.sift_db[name] = []
                 self.sift_db[name].append(np.array(item['des']))
     
-    def search(self, identifier, query_img, target_drugs=None, sift_ratio_threshold=0.75):
+    def search(self, query_img, target_drugs=None, sift_ratio_threshold=0.75):
         """Search ด้วย hybrid approach"""
-        if config.USE_HYBRID_MATCHING and self.nn_identifier and self.nn_features_db:
+        if config.USE_NEURAL_NETWORK and self.nn_identifier and self.nn_features_db:
             return self._search_hybrid(query_img, target_drugs)
         else:
             # Fallback to SIFT
-            return self._search_sift(identifier, query_img, target_drugs, sift_ratio_threshold)
+            return self._search_sift(query_img, target_drugs, sift_ratio_threshold)
+    
+    def _search_sift(self, query_img, target_drugs=None, sift_ratio_threshold=0.75):
+        """Search ด้วย SIFT"""
+        query_kp, query_des = self.sift_identifier.extract_features(query_img)
+        
+        if query_des is None:
+            return None
+        
+        best_match = None
+        best_inliers = 0
+        
+        drugs_to_search = target_drugs if target_drugs else list(self.sift_db.keys())
+        
+        for drug_name in drugs_to_search:
+            if drug_name not in self.sift_db:
+                continue
+            
+            for db_des in self.sift_db[drug_name]:
+                if db_des is None or len(db_des) < 2:
+                    continue
+                
+                try:
+                    matches = self.sift_identifier.flann.knnMatch(query_des, db_des, k=2)
+                except:
+                    continue
+                
+                good_matches = []
+                for m, n in matches:
+                    if m.distance < sift_ratio_threshold * n.distance:
+                        good_matches.append(m)
+                
+                if len(good_matches) >= 4:
+                    src_pts = np.float32([query_kp[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                    dst_pts = np.float32([query_kp[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+                    
+                    M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+                    if mask is not None:
+                        inliers = mask.ravel().tolist().count(1)
+                        if inliers > best_inliers and inliers >= config.SIFT_MIN_MATCH_COUNT:
+                            best_inliers = inliers
+                            best_match = drug_name
+        
+        if best_match:
+            return {
+                'name': best_match,
+                'score': best_inliers,
+                'method': 'sift'
+            }
+        
+        return None
     
     def _search_hybrid(self, query_img, target_drugs=None):
         """Search ด้วยวิธี hybrid (Neural + SIFT)"""
@@ -357,7 +407,8 @@ class HybridMatcher:
         # Extract neural features จาก query
         query_features = self.nn_identifier.extract_features(query_img)
         if query_features is None:
-            return None
+            # Fallback to SIFT
+            return self._search_sift(query_img, target_drugs)
         
         # สร้าง partial crops สำหรับ query
         partial_crops = self.nn_identifier.create_partial_crops(query_img)
@@ -417,7 +468,8 @@ class HybridMatcher:
                 'method': 'hybrid'
             }
         
-        return None
+        # ถ้า Neural Network หาไม่เจอ ให้ลอง SIFT
+        return self._search_sift(query_img, target_drugs)
     
     def _compute_sift_score(self, query_img, drug_name):
         """คำนวณ SIFT score"""
@@ -450,54 +502,3 @@ class HybridMatcher:
         # Normalize SIFT score (0-1)
         normalized_score = min(max_sift_score / 50.0, 1.0)
         return normalized_score
-    
-    def _search_sift(self, identifier, query_img, target_drugs=None, sift_ratio_threshold=0.75):
-        """Search ด้วย SIFT แบบเดิม (สำหรับ backward compatibility)"""
-        # ใช้ logic เดิมจาก VectorDB
-        query_kp, query_des = identifier.extract_features(query_img)
-        
-        if query_des is None:
-            return None
-        
-        best_match = None
-        best_inliers = 0
-        
-        drugs_to_search = target_drugs if target_drugs else list(self.sift_db.keys())
-        
-        for drug_name in drugs_to_search:
-            if drug_name not in self.sift_db:
-                continue
-            
-            for db_des in self.sift_db[drug_name]:
-                if db_des is None:
-                    continue
-                
-                try:
-                    matches = identifier.flann.knnMatch(query_des, db_des, k=2)
-                except:
-                    continue
-                
-                good_matches = []
-                for m, n in matches:
-                    if m.distance < sift_ratio_threshold * n.distance:
-                        good_matches.append(m)
-                
-                if len(good_matches) >= 4:
-                    src_pts = np.float32([query_kp[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-                    dst_pts = np.float32([query_kp[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-                    
-                    M, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-                    if mask is not None:
-                        inliers = mask.ravel().tolist().count(1)
-                        if inliers > best_inliers and inliers >= config.SIFT_MIN_MATCH_COUNT:
-                            best_inliers = inliers
-                            best_match = drug_name
-        
-        if best_match:
-            return {
-                'name': best_match,
-                'score': best_inliers,
-                'method': 'sift'
-            }
-        
-        return None

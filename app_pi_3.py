@@ -11,7 +11,7 @@ os.environ["QT_QPA_PLATFORM"] = "xcb"
 # Import Modules
 try:
     import config
-    from engines import YOLODetector, SIFTIdentifier, HybridMatcher
+    from engines import YOLODetector, HybridMatcher
     from his_mock import HISSystem
     from picamera2 import Picamera2
 except ImportError as e:
@@ -92,19 +92,26 @@ class AsyncDetector:
         self.yolo = YOLODetector(model_path)
         
         # ใช้ HybridMatcher แทน VectorDB
-        if config.USE_NEURAL_NETWORK:
-            print("🧠 Using Hybrid Matcher (Neural + SIFT)...")
+        print(f"🧠 Using {'Hybrid' if config.USE_NEURAL_NETWORK else 'SIFT'} Matcher...")
+        
+        # ตรวจสอบว่ามี neural database หรือไม่
+        use_neural_db = config.USE_NEURAL_NETWORK and os.path.exists(config.NEURAL_DB_FILE_PATH)
+        
+        if use_neural_db:
             self.matcher = HybridMatcher(
                 db_path=config.NEURAL_DB_FILE_PATH,
                 nn_model_path=config.NEURAL_MODEL_PATH
             )
         else:
-            print("🔍 Using Legacy SIFT Matcher...")
             # ถ้าไม่มี neural database ใช้ไฟล์เดิม
-            self.matcher = HybridMatcher(
-                db_path=config.DB_FILE_PATH,
-                nn_model_path=None
-            )
+            if os.path.exists(config.DB_FILE_PATH):
+                self.matcher = HybridMatcher(
+                    db_path=config.DB_FILE_PATH,
+                    nn_model_path=None
+                )
+            else:
+                print("❌ No database file found!")
+                self.matcher = None
         
         self.patient_drugs = patient_drugs
         
@@ -138,7 +145,7 @@ class AsyncDetector:
                     frame_to_process = self.latest_frame
                     self.latest_frame = None
 
-            if frame_to_process is not None:
+            if frame_to_process is not None and self.matcher:
                 frame_count += 1
                 h, w = frame_to_process.shape[:2]
                 
@@ -187,9 +194,9 @@ class AsyncDetector:
                     
                     # 🟢 ใช้ HybridMatcher สำหรับค้นหา
                     match_result = self.matcher.search(
-                        None,  # ไม่ใช้ identifier โดยตรง (HybridMatcher จัดการเอง)
                         crop_img,
-                        target_drugs=drugs_to_find
+                        target_drugs=drugs_to_find,
+                        sift_ratio_threshold=match_threshold
                     )
                     
                     if match_result:

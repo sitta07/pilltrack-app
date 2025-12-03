@@ -11,8 +11,8 @@ DEBUG_DIR = 'debug_output'
 # =========================
 # 🧠 AI MODE SETTINGS
 # =========================
-USE_NEURAL_NETWORK = True       # ✅ เปิดใช้งาน Neural Network
-USE_HYBRID_MATCHING = True      # ✅ ใช้ทั้ง Neural Network และ SIFT
+USE_NEURAL_NETWORK = False       # ✅ ปิดชั่วคราวเพื่อ debug
+USE_HYBRID_MATCHING = False      # ✅ ใช้ SIFT เท่านั้นก่อน
 NEURAL_THRESHOLD = 0.75         # ✅ Threshold สำหรับ Neural Network matching
 HYBRID_NN_WEIGHT = 0.7          # ✅ น้ำหนัก Neural Network ใน hybrid matching
 HYBRID_SIFT_WEIGHT = 0.3        # ✅ น้ำหนัก SIFT ใน hybrid matching
