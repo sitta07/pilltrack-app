@@ -4,10 +4,11 @@ from ultralytics import YOLO
 import config
 
 class YOLODetector:
-    def __init__(self, model_path):
+    def __init__(self, model_path, task=None):
         print(f"🔄 Loading YOLO Model: {model_path}...")
-        self.model = YOLO(model_path)
+        self.model = YOLO(model_path, task=task)
     
+    # รองรับ kwargs เพื่อให้รับค่า imgsz หรือ conf จาก app ได้ยืดหยุ่น
     def detect(self, frame, conf=0.5, iou=0.5, agnostic_nms=True, max_det=100, **kwargs):
         results = self.model(frame, 
                              verbose=False, 
@@ -16,7 +17,7 @@ class YOLODetector:
                              agnostic_nms=agnostic_nms, 
                              max_det=max_det,           
                              retina_masks=True,
-                             **kwargs) # ส่ง imgsz ต่อให้โมเดล
+                             **kwargs)
         return results[0]
 
     def get_crop(self, img, box, mask_data):
@@ -49,7 +50,7 @@ class SIFTIdentifier:
         search_params = dict(checks=50)
         self.flann = cv2.FlannBasedMatcher(index_params, search_params)
         
-        # ✅ ใช้ CLAHE เพื่อแก้ปัญหาแสงเงาบนฟอยล์ยา
+        # ใช้ CLAHE ช่วยเรื่องแสงสะท้อนบนแผงยา (สูตรเมื่อวาน)
         self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
 
     def extract_features(self, img_bgr):
@@ -67,7 +68,7 @@ class SIFTIdentifier:
         # 3. Detect SIFT
         kp, des = self.sift.detectAndCompute(gray, None)
         
-        # คืนค่าแค่ 2 ตัว (ไม่เอาสี)
+        # ✅ คืนค่าแค่ 2 ตัว (ไม่มีสี)
         return kp, des
 
     def compare(self, query_pack, db_pack):
