@@ -22,10 +22,10 @@ def main():
 
     # 1. Load Model
     # ใช้ .pt เพื่อความชัวร์ (แก้ Path อัตโนมัติถ้า config ชี้ไป onnx)
-    if config.MODEL_YOLO_PATH.endswith('.onnx'):
-        model_path = config.MODEL_YOLO_PATH.replace('.onnx', '.pt')
+    if config.DB_YOLO_PATH.endswith('.onnx'):
+        model_path = config.DB_YOLO_PATH.replace('.onnx', '.pt')
     else:
-        model_path = config.MODEL_YOLO_PATH
+        model_path = config.DB_YOLO_PATH
         
     print(f"🔹 Loading Model: {model_path}")
     # ใส่ task='segment' เพื่อกัน Warning
