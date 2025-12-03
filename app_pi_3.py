@@ -139,7 +139,7 @@ class AsyncDetector:
                 
                 # 1. YOLO Detect
                 # imgsz=320 สำคัญมาก! มันบอก YOLO ว่า "ย่อภาพให้เหลือ 320 นะก่อนตรวจ"
-                results = self.yolo.detect(frame_to_process, conf=0.25, iou=0.45, agnostic_nms=True, max_det=5, imgsz=320)
+                results = self.yolo.detect(frame_to_process, conf=0.5, iou=0.45, agnostic_nms=True, max_det=5, imgsz=320)
                 
                 # 2. Sort Boxes
                 valid_boxes = []

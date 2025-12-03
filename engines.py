@@ -9,7 +9,7 @@ class YOLODetector:
         self.model = YOLO(model_path, task=task)
     
     # รองรับ kwargs เพื่อให้รับค่า imgsz หรือ conf จาก app ได้ยืดหยุ่น
-    def detect(self, frame, conf=0.1, iou=0.25, agnostic_nms=True, max_det=100, **kwargs):
+    def detect(self, frame, conf=0.25, iou=0.25, agnostic_nms=True, max_det=100, **kwargs):
         results = self.model(frame, 
                              verbose=False, 
                              conf=conf, 
