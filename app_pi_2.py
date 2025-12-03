@@ -120,7 +120,7 @@ class AsyncDetector:
 
             if frame_to_process is not None:
                 # 1. YOLO Detect (No Draw)
-                results = self.yolo.detect(frame_to_process, conf=0.7, iou=0.45, agnostic_nms=True, max_det=5, imgsz=320)
+                results = self.yolo.detect(frame_to_process, conf=0.4, iou=0.45, agnostic_nms=True, max_det=5, imgsz=320)
                 
                 # 2. SIFT Check
                 h, w = frame_to_process.shape[:2]
@@ -259,7 +259,7 @@ def main():
         ai_worker.stop()
         vs.stop()
         cv2.destroyAllWindows()
-        print("👋 Bye Bye!")
+        print("Closed Program Now")
 
 if __name__ == "__main__":
     main()
