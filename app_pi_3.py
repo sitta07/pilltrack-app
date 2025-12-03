@@ -11,8 +11,7 @@ os.environ["QT_QPA_PLATFORM"] = "xcb"
 # Import Modules
 try:
     import config
-    from engines import YOLODetector, SIFTIdentifier
-    from database import VectorDB
+    from engines import YOLODetector, SIFTIdentifier, HybridMatcher
     from his_mock import HISSystem
     from picamera2 import Picamera2
 except ImportError as e:
@@ -45,8 +44,6 @@ class WebcamStream:
         try:
             self.picam2 = Picamera2()
             
-            # ✅ ปรับเป็น 1280x720 (HD)
-            # ภาพบนจอจะชัดขึ้นมาก แต่ยังรักษา 60 FPS ไหวบน Pi 5
             config = self.picam2.create_preview_configuration(
                 main={"size": (1280, 720), "format": "RGB888"},
                 controls={"FrameDurationLimits": (16666, 16666)} 
@@ -88,19 +85,35 @@ class WebcamStream:
                 pass
 
 # ==========================================
-# 🧠 ASYNC AI WORKER
+# 🧠 ASYNC AI WORKER (Hybrid Version)
 # ==========================================
 class AsyncDetector:
     def __init__(self, model_path, patient_drugs):
         self.yolo = YOLODetector(model_path)
-        self.identifier = SIFTIdentifier()
-        self.db = VectorDB()
+        
+        # ใช้ HybridMatcher แทน VectorDB
+        if config.USE_NEURAL_NETWORK:
+            print("🧠 Using Hybrid Matcher (Neural + SIFT)...")
+            self.matcher = HybridMatcher(
+                db_path=config.NEURAL_DB_FILE_PATH,
+                nn_model_path=config.NEURAL_MODEL_PATH
+            )
+        else:
+            print("🔍 Using Legacy SIFT Matcher...")
+            # ถ้าไม่มี neural database ใช้ไฟล์เดิม
+            self.matcher = HybridMatcher(
+                db_path=config.DB_FILE_PATH,
+                nn_model_path=None
+            )
+        
         self.patient_drugs = patient_drugs
         
         self.latest_frame = None
         self.verified_drugs = set()
         self.running = True
         self.lock = threading.Lock()
+        
+        print(f"💊 Looking for drugs: {patient_drugs}")
 
     def start(self):
         threading.Thread(target=self.run, daemon=True).start()
@@ -115,6 +128,8 @@ class AsyncDetector:
 
     def run(self):
         print("🧠 AI Worker Running...")
+        frame_count = 0
+        
         while self.running:
             frame_to_process = None
             
@@ -124,62 +139,82 @@ class AsyncDetector:
                     self.latest_frame = None
 
             if frame_to_process is not None:
+                frame_count += 1
                 h, w = frame_to_process.shape[:2]
                 
-                # 🧪 LOGIC กรองยาที่เจอแล้ว
+                # 🧪 กรองยาที่เจอแล้ว
                 drugs_to_find = list(set(self.patient_drugs) - self.verified_drugs)
                 
                 # ถ้าหายาครบแล้ว
                 if not drugs_to_find and self.verified_drugs:
-                    time.sleep(0.1) 
+                    time.sleep(0.1)
                     continue
                 
-                # 🟢 NEW: ปรับค่าเกณฑ์ความแม่นยำ (Match Threshold)
-                # * ค่า Default (ผ่อนปรน): 0.70
-                # * ถ้าเหลือยาที่ต้องหาน้อยกว่า/เท่ากับ 2 ชนิด (เข้มงวด): 0.60
-                match_threshold = 0.70 
-
+                # 🟢 NEW: ปรับค่าเกณฑ์ความแม่นยำตามจำนวนยาที่เหลือ
+                match_threshold = 0.70
                 if len(drugs_to_find) <= 2:
-                    match_threshold = 0.60 
-                # 🟢 END: ปรับค่าเกณฑ์
+                    match_threshold = 0.60
                 
                 # 1. YOLO Detect
-                results = self.yolo.detect(frame_to_process, conf=0.25, iou=0.45, agnostic_nms=True, max_det=5, imgsz=320)
+                results = self.yolo.detect(
+                    frame_to_process, 
+                    conf=0.25, 
+                    iou=0.45, 
+                    agnostic_nms=True, 
+                    max_det=5, 
+                    imgsz=320
+                )
                 
-                # 2. Sort Boxes
+                # 2. Sort Boxes by area
                 valid_boxes = []
                 for i, box in enumerate(results.boxes):
                     x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-                    area = (x2-x1)*(y2-y1)
-                    if area > (w*h * 0.02): 
+                    area = (x2 - x1) * (y2 - y1)
+                    if area > (w * h * 0.02):
                         valid_boxes.append((area, box, i))
                 
                 valid_boxes.sort(key=lambda x: x[0], reverse=True)
-                target_boxes = valid_boxes[:1] 
+                target_boxes = valid_boxes[:1]  # ใช้กล่องที่ใหญ่สุด
 
                 current_found = set()
-                # 3. SIFT Logic
+                # 3. Hybrid Matching Logic
                 for _, box, idx in target_boxes:
                     mask = results.masks[idx] if results.masks else None
                     crop_img = self.yolo.get_crop(frame_to_process, box, mask)
                     
-                    # 🟢 CHANGE: ส่ง drugs_to_find และ match_threshold ไปให้ SIFT เทียบ
-                    # (***หมายเหตุ: ต้องมั่นใจว่า self.db.search ถูกแก้ไขให้รับและใช้ค่า sift_ratio_threshold ได้***)
-                    match_result = self.db.search(
-                        self.identifier, 
-                        crop_img, 
-                        target_drugs=drugs_to_find,
-                        sift_ratio_threshold=match_threshold 
+                    if crop_img is None or crop_img.size == 0:
+                        continue
+                    
+                    # 🟢 ใช้ HybridMatcher สำหรับค้นหา
+                    match_result = self.matcher.search(
+                        None,  # ไม่ใช้ identifier โดยตรง (HybridMatcher จัดการเอง)
+                        crop_img,
+                        target_drugs=drugs_to_find
                     )
                     
                     if match_result:
-                        current_found.add(match_result['name'])
+                        drug_name = match_result['name']
+                        score = match_result['score']
+                        method = match_result['method']
+                        
+                        # ตรวจสอบว่า score สูงพอ
+                        if method == 'sift':
+                            if score >= config.SIFT_MIN_MATCH_COUNT:
+                                current_found.add(drug_name)
+                                print(f"✅ Found via SIFT: {drug_name} (score: {score})")
+                        elif method == 'hybrid':
+                            if score >= config.NEURAL_MIN_CONFIDENCE:
+                                current_found.add(drug_name)
+                                print(f"✅ Found via Hybrid: {drug_name} (score: {score:.2f})")
                 
                 if current_found:
                     self.verified_drugs.update(current_found)
+                    print(f"📋 Verified drugs: {self.verified_drugs}")
             
             else:
                 time.sleep(0.01)
+        
+        print("🧠 AI Worker Stopped")
 
     def stop(self):
         self.running = False
@@ -187,18 +222,21 @@ class AsyncDetector:
 # ==========================================
 # 🎨 UI DRAWING
 # ==========================================
-def draw_ui(img, patient_info, found_set, fps):
+def draw_ui(img, patient_info, found_set, fps, use_nn=True):
     h, w = img.shape[:2]
     
     # 1. Draw FPS & Temp (Top Left)
     temp = get_cpu_temperature()
     temp_color = (0, 255, 0) if temp < 80 else (255, 0, 0)
     
-    # ปรับขนาดตัวอักษรนิดหน่อยให้เข้ากับจอ HD
     cv2.putText(img, f"FPS: {int(fps)}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
     cv2.putText(img, f"TEMP: {temp:.1f} C", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1.0, temp_color, 2)
+    
+    # แสดง AI Mode
+    ai_mode = "🧠 Neural" if use_nn else "🔍 SIFT"
+    cv2.putText(img, f"AI: {ai_mode}", (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
 
-    # 2. Patient Info Panel (ปรับตำแหน่งให้ชิดขวาของจอ HD)
+    # 2. Patient Info Panel
     panel_w = 300
     panel_h = 100 + (len(patient_info['drugs']) * 35)
     x1, y1 = w - panel_w - 20, 20
@@ -218,21 +256,45 @@ def draw_ui(img, patient_info, found_set, fps):
     start_y = y1 + 125
     for drug in patient_info['drugs']:
         is_found = False
-        # ตรวจสอบว่าชื่อยาในลิสต์ผู้ป่วยตรงกับยาที่เจอแล้วหรือไม่
         for found in found_set:
             if drug.lower() in found.lower() or found.lower() in drug.lower():
                 is_found = True
                 break
-        icon = "[/]" if is_found else "[ ]"
-        color = (0, 255, 0) if is_found else (150, 150, 150)
+        icon = "✅" if is_found else "⏳"
+        color = (0, 255, 0) if is_found else (200, 200, 100)
         cv2.putText(img, f"{icon} {drug}", (x1+10, start_y), font, 0.6, color, 1)
         start_y += 30
+    
+    # 3. Progress Bar
+    total_drugs = len(patient_info['drugs'])
+    found_count = len(found_set)
+    progress = found_count / total_drugs if total_drugs > 0 else 0
+    
+    bar_y = h - 50
+    bar_width = 400
+    bar_height = 30
+    bar_x = (w - bar_width) // 2
+    
+    # Background
+    cv2.rectangle(img, (bar_x, bar_y), (bar_x + bar_width, bar_y + bar_height), (50, 50, 50), -1)
+    
+    # Progress
+    progress_width = int(bar_width * progress)
+    if progress_width > 0:
+        progress_color = (0, 255, 0) if progress == 1.0 else (0, 200, 255)
+        cv2.rectangle(img, (bar_x, bar_y), (bar_x + progress_width, bar_y + bar_height), progress_color, -1)
+    
+    # Border and text
+    cv2.rectangle(img, (bar_x, bar_y), (bar_x + bar_width, bar_y + bar_height), (100, 100, 100), 2)
+    progress_text = f"{found_count}/{total_drugs} drugs verified ({progress*100:.0f}%)"
+    cv2.putText(img, progress_text, (bar_x + 10, bar_y + 20), font, 0.7, (255, 255, 255), 2)
 
 # ==========================================
 # 🚀 MAIN LOOP
 # ==========================================
 def main():
-    print("🚀 Starting PillTrack (HD 720p Mode)...")
+    print("🚀 Starting PillTrack (Hybrid AI Mode)...")
+    print(f"🤖 AI Settings: Neural={config.USE_NEURAL_NETWORK}, Hybrid={config.USE_HYBRID_MATCHING}")
     
     # 1. Setup
     def get_optimized_model_path(path):
@@ -259,35 +321,46 @@ def main():
     while vs.read() is None:
         time.sleep(0.1)
     
-    window_name = "PillTrack"
+    window_name = "PillTrack - Hybrid AI"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    # คำสั่งนี้จะดึงภาพ HD ให้เต็มจอ Monitor อัตโนมัติ
     cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
     prev_time = 0
+    fps = 0
     
     try:
         while True:
             frame = vs.read()
-            if frame is None: continue
+            if frame is None: 
+                time.sleep(0.01)
+                continue
             
-            # ส่งภาพ HD ไปให้ AI (AI จะย่อเองภายใน)
+            # ส่งภาพให้ AI worker
             ai_worker.update_frame(frame)
 
             # รับผลลัพธ์
             found_drugs = ai_worker.get_verified_drugs()
             
+            # คำนวณ FPS
             curr_time = time.time()
-            fps = 1 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 0
+            if (curr_time - prev_time) > 0:
+                fps = 1 / (curr_time - prev_time)
             prev_time = curr_time
             
-            # วาด UI บนภาพ HD
+            # วาด UI
             ui_frame = frame.copy()
-            draw_ui(ui_frame, patient_info, found_drugs, fps)
+            draw_ui(ui_frame, patient_info, found_drugs, fps, config.USE_NEURAL_NETWORK)
 
             # แสดงผล
             cv2.imshow(window_name, ui_frame)
-            if cv2.waitKey(1) == ord('q'): break
+            
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'): 
+                break
+            elif key == ord('n'):
+                # Toggle neural network mode
+                config.USE_NEURAL_NETWORK = not config.USE_NEURAL_NETWORK
+                print(f"🔄 Toggled Neural Network: {config.USE_NEURAL_NETWORK}")
             
             time.sleep(0.01)
 
