@@ -10,7 +10,7 @@ os.environ["QT_QPA_PLATFORM"] = "xcb"
 
 try:
     import config
-    from engines import SIFTIdentifier
+    from engines import YOLODetector, SIFTIdentifier
     from database import VectorDB
     from his_mock import HISSystem
     from picamera2 import Picamera2
@@ -19,110 +19,7 @@ except ImportError as e:
     sys.exit(1)
 
 # ==========================================
-# ⚡ UNIVERSAL FAST YOLO (Auto-Scale Fix)
-# ==========================================
-class FastYOLODetector:
-    def __init__(self, model_path, conf_thres=0.5, iou_thres=0.4):
-        print(f"⚡ Loading FastYOLO (Auto-Scale Mode): {model_path}")
-        self.net = cv2.dnn.readNetFromONNX(model_path)
-        self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
-        self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-        
-        self.conf_thres = conf_thres
-        self.iou_thres = iou_thres
-        # ตั้งค่า Input Size ให้ตรงกับที่ YOLO ต้องการ (320 หรือ 640)
-        # ถ้า export มา default ส่วนใหญ่คือ 640 แต่เราย่อเหลือ 320 เพื่อความเร็ว
-        self.input_size = (320, 320) 
-
-    def detect(self, image):
-        # 1. Prepare Input
-        # หมายเหตุ: Picamera2 ส่งมาเป็น RGB แล้ว -> swapRB=False (ไม่ต้องสลับสี)
-        blob = cv2.dnn.blobFromImage(image, 1/255.0, self.input_size, swapRB=False, crop=False)
-        self.net.setInput(blob)
-        
-        # 2. Inference
-        raw_output = self.net.forward()
-
-        # 3. จัดการ Shape ข้อมูล
-        if isinstance(raw_output, (list, tuple)):
-            predictions = raw_output[0]
-        else:
-            predictions = raw_output
-
-        predictions = np.squeeze(predictions)
-
-        # Transpose ถ้าจำเป็น (ให้แถวเป็น Anchors 8400)
-        if predictions.ndim == 2 and predictions.shape[0] < predictions.shape[1]:
-            predictions = predictions.transpose()
-
-        boxes = []
-        scores = []
-        class_ids = []
-        
-        img_h, img_w = image.shape[:2]
-
-        # 4. ✅ AUTO-SCALE LOGIC (แก้ปัญหามุมบนซ้าย)
-        # เช็คว่าค่าพิกัดสูงสุดมันน้อยกว่า 1.0 หรือไม่? (ถ้าใช่ แสดงว่าเป็น Normalize 0-1)
-        # เราสุ่มเช็คจาก 100 แถวแรกเพื่อความเร็ว
-        sample_max = np.max(predictions[:100, :4]) if predictions.shape[0] > 100 else 0
-        
-        is_normalized = sample_max < 2.0 
-        
-        if is_normalized:
-            # ถ้าเป็น 0-1 ให้คูณด้วยขนาดภาพจริงเลย
-            scale_w = img_w
-            scale_h = img_h
-        else:
-            # ถ้าเป็น Pixel (เช่น 0-320) ให้คูณอัตราส่วน
-            scale_w = img_w / self.input_size[0]
-            scale_h = img_h / self.input_size[1]
-
-        # 5. Loop หา Object
-        if predictions.shape[1] > 4:
-            class_scores = predictions[:, 4:]
-            max_scores = np.max(class_scores, axis=1)
-            max_indices = np.argmax(class_scores, axis=1)
-            
-            keep_indices = max_scores >= self.conf_thres
-            
-            filtered_preds = predictions[keep_indices]
-            filtered_scores = max_scores[keep_indices]
-            filtered_classes = max_indices[keep_indices]
-            
-            for i, pred in enumerate(filtered_preds):
-                cx, cy, w, h = pred[0], pred[1], pred[2], pred[3]
-                
-                # คำนวณพิกัด (ใช้ scale ที่ถูกต้อง)
-                left = int((cx - w/2) * scale_w)
-                top = int((cy - h/2) * scale_h)
-                width = int(w * scale_w)
-                height = int(h * scale_h)
-                
-                boxes.append([left, top, width, height])
-                scores.append(float(filtered_scores[i]))
-                class_ids.append(filtered_classes[i])
-
-        # 6. NMS
-        indices = cv2.dnn.NMSBoxes(boxes, scores, self.conf_thres, self.iou_thres)
-        
-        final_boxes = []
-        if len(indices) > 0:
-            for i in indices.flatten():
-                x, y, w, h = boxes[i]
-                final_boxes.append((x, y, x+w, y+h))
-                
-        return final_boxes
-
-    def get_crop(self, frame, box):
-        x1, y1, x2, y2 = box
-        # กัน Crop หลุดขอบ
-        h, w = frame.shape[:2]
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = min(w, x2), min(h, y2)
-        return frame[y1:y2, x1:x2]
-
-# ==========================================
-# 📷 WEBCAM STREAM
+# 📷 WEBCAM STREAM (30 FPS Limited)
 # ==========================================
 class WebcamStream:
     def __init__(self):
@@ -131,17 +28,17 @@ class WebcamStream:
         self.picam2 = None
 
     def start(self):
-        print("📷 Camera: HD 720p Mode")
+        print("📷 Camera: HD Mode @ 30 FPS")
         try:
             self.picam2 = Picamera2()
-            # ใช้ RGB888
+            # ✅ Force 30 FPS (33333 microseconds)
             config = self.picam2.create_preview_configuration(
                 main={"size": (1280, 720), "format": "RGB888"},
-                controls={"FrameDurationLimits": (16666, 16666)}
+                controls={"FrameDurationLimits": (33333, 33333)} 
             )
             self.picam2.configure(config)
             self.picam2.start()
-            time.sleep(2.0)
+            time.sleep(1.0) # Warmup เร็วขึ้น
         except Exception as e:
             print(f"❌ Camera Error: {e}")
             self.stopped = True
@@ -151,6 +48,7 @@ class WebcamStream:
     def update(self):
         while not self.stopped:
             try:
+                # capture_array รอเฟรมใหม่มา (Block จนกว่าจะครบ 33ms)
                 frame = self.picam2.capture_array()
                 if frame is not None: self.frame = frame
             except: pass
@@ -163,14 +61,14 @@ class WebcamStream:
 # ==========================================
 class AsyncDetector:
     def __init__(self, model_path, patient_drugs):
-        self.yolo = FastYOLODetector(model_path, conf_thres=0.6, iou_thres=0.5)
+        # ✅ ใช้ engines.py ตัวใหม่ (YOLODetector ที่แก้แล้ว)
+        self.yolo = YOLODetector(model_path)
         self.identifier = SIFTIdentifier()
         self.db = VectorDB()
         self.patient_drugs = patient_drugs
         
         self.latest_frame = None
         self.verified_drugs = set()
-        self.latest_boxes = []
         self.running = True
         self.lock = threading.Lock()
 
@@ -183,10 +81,10 @@ class AsyncDetector:
             self.latest_frame = frame.copy()
 
     def get_results(self):
-        return self.verified_drugs, self.latest_boxes
+        return self.verified_drugs
 
     def run(self):
-        print("🧠 AI Worker Running...")
+        print("🧠 AI Worker Running (High Speed)...")
         while self.running:
             frame_to_process = None
             with self.lock:
@@ -197,25 +95,25 @@ class AsyncDetector:
             if frame_to_process is not None:
                 h, w = frame_to_process.shape[:2]
                 
-                boxes = self.yolo.detect(frame_to_process)
+                # 1. Detect (ใช้ Fast YOLO จาก engines.py)
+                # คืนค่าเป็น List ของ [x1, y1, x2, y2]
+                boxes = self.yolo.detect(frame_to_process, conf=0.6)
                 
-                # Filter & Sort
+                # 2. Filter & Sort (เอาเม็ดใหญ่สุด 1 เม็ด)
                 valid_boxes = []
-                self.latest_boxes = boxes
-                
                 for box in boxes:
                     x1, y1, x2, y2 = box
                     area = (x2-x1)*(y2-y1)
-                    # กรองจุดเล็กจัดๆ ออก (noise)
-                    if area > (w*h * 0.005): 
+                    if area > (w*h * 0.01): 
                          valid_boxes.append((area, box))
                 
                 valid_boxes.sort(key=lambda x: x[0], reverse=True)
                 target_boxes = valid_boxes[:1]
 
-                # SIFT
+                # 3. SIFT Compare
                 current_found = set()
                 for _, box in target_boxes:
+                    # Crop เร็ว (ไม่มี Mask)
                     crop_img = self.yolo.get_crop(frame_to_process, box)
                     match_result = self.db.search(self.identifier, crop_img, target_drugs=self.patient_drugs)
                     if match_result:
@@ -224,23 +122,20 @@ class AsyncDetector:
                 if current_found:
                     self.verified_drugs.update(current_found)
             else:
-                time.sleep(0.01)
+                # Sleep นานขึ้นนิดนึง เพื่อคืน CPU ให้ระบบ
+                time.sleep(0.02)
 
     def stop(self): self.running = False
 
 # ==========================================
-# 🎨 UI DRAWING
+# 🎨 UI (Clean - No Drawing)
 # ==========================================
-def draw_ui(img, patient_info, found_set, boxes, fps):
+def draw_ui(img, patient_info, found_set, fps):
     h, w = img.shape[:2]
     
-    # Dots
-    for (x1, y1, x2, y2) in boxes:
-        cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
-        cv2.circle(img, (cx, cy), 8, (0, 255, 0), -1) # จุดเขียว
-        cv2.circle(img, (cx, cy), 10, (255, 255, 255), 2) # ขอบขาว
+    # ❌ ไม่วาด Box หรือ Dot แล้ว (ตามสั่ง)
 
-    # Info
+    # Info (FPS + Temp)
     try:
         with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
             temp = float(f.read())/1000.0
@@ -272,8 +167,9 @@ def draw_ui(img, patient_info, found_set, boxes, fps):
 # 🚀 MAIN
 # ==========================================
 def main():
-    print("🚀 Starting PillTrack (Auto-Scale Fix)...")
+    print("🚀 Starting PillTrack (Max Speed Mode)...")
     
+    # Auto ONNX Path Fix
     if config.MODEL_YOLO_PATH.endswith('.pt'):
         model_path = config.MODEL_YOLO_PATH.replace('.pt', '.onnx')
     else:
@@ -302,18 +198,23 @@ def main():
             frame = vs.read()
             if frame is None: continue
             
+            # ส่งภาพไปให้ AI ทำงานเบื้องหลัง
             ai_worker.update_frame(frame)
-            found, boxes = ai_worker.get_results()
+            found = ai_worker.get_results()
             
+            # คำนวณ FPS
             curr = time.time()
             fps = 1/(curr-prev_time) if curr>prev_time else 0
             prev_time = curr
             
+            # วาดหน้าจอ (แค่ Panel)
             ui = frame.copy()
-            draw_ui(ui, p_info, found, boxes, fps)
+            draw_ui(ui, p_info, found, fps)
             
             cv2.imshow("PillTrack", ui)
             if cv2.waitKey(1) == ord('q'): break
+            
+            # Sleep เล็กน้อยเพื่อให้ CPU ไม่ 100% ตลอดเวลา
             time.sleep(0.01)
 
     except KeyboardInterrupt: pass
