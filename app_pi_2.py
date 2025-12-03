@@ -45,7 +45,7 @@ class WebcamStream:
         try:
             self.picam2 = Picamera2()
             config = self.picam2.create_preview_configuration(
-                main={"size": (640, 480), "format": "RGB888"},
+                main={"size": (1280, 720), "format": "RGB888"},
                 controls={"FrameDurationLimits": (16666, 16666)} 
             )
             self.picam2.configure(config)
