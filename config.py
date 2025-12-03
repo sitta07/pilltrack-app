@@ -12,7 +12,7 @@ DEBUG_DIR = 'debug_output'
 # =========================
 BASE_DIR = os.getcwd()
 MODEL_YOLO_PATH = os.path.join(BASE_DIR, 'best_process_2.onnx')  
-# MODEL_YOLO_PATH = os.path.join(BASE_DIR, 'seg_process-.onnx')  
+# MODEL_YOLO_PATH = os.path.join(BASE_DIR, 'seg_process-best.onnx')  
 
 DB_YOLO_PATH = os.path.join(BASE_DIR,'seg_db_best.pt')
 DB_FILE_PATH = os.path.join(BASE_DIR, 'drug_db.pkl')      
