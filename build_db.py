@@ -39,12 +39,14 @@ def main():
         return
 
     # 2. Loop Processing
+    # ลูปที่ 1: วนลูปตามชื่อยา
     for drug_name in os.listdir(RAW_DATA_DIR):
         drug_path = os.path.join(RAW_DATA_DIR, drug_name)
         if not os.path.isdir(drug_path): continue
         
         print(f"   💊 Processing: {drug_name}...")
         
+        # ลูปที่ 2: วนลูปตามไฟล์รูปภาพ **ทั้งหมด** (รวมถึง 360 องศา)
         for idx, file_name in enumerate(os.listdir(drug_path)):
             if not file_name.lower().endswith(('.jpg', '.png', '.jpeg')): continue
             
@@ -55,6 +57,7 @@ def main():
             # Detect
             results = yolo.detect(frame, conf=0.5)
             
+            # ลูปที่ 3: วนลูปตามวัตถุที่ตรวจจับได้ (กล่อง) ในรูปภาพนั้น
             for i, box in enumerate(results.boxes):
                 mask = results.masks[i] if results.masks else None
                 
@@ -70,6 +73,7 @@ def main():
                     kp, des = identifier.extract_features(crop_img)
                     
                     if des is not None and len(kp) > 10:
+                        # **ส่วนนี้คือการเก็บ Keypoints/Descriptors จากมุมมอง 360 องศา**
                         db_data.append({
                             'name': drug_name,
                             'kp': serialize_keypoints(kp),
