@@ -45,7 +45,7 @@ FPS_TARGET = 15  # Reduced FPS target for Pi (vs 30 for GPU)
 SKIP_DISPLAY = True  # Skip cv2.imshow (huge speedup!)
 SKIP_FRAMES = 1  # Process every Nth frame (1=all, 2=every 2nd, etc)
 PROCESS_RESOLUTION = (320, 240)  # Lower resolution for faster processing
-DETECTION_CONFIDENCE_THRESHOLD = 0.4  # Confidence threshold for detections
+DETECTION_CONFIDENCE_THRESHOLD = 0.65  # Confidence threshold for detections
 ENABLE_FRAME_SKIPPING = True  # Drop frames if can't keep up
 
 logger.info(f"🔧 Running on: {DEVICE} (Raspberry Pi 5 Mode)")
@@ -314,7 +314,7 @@ class YOLODrugDetector:
                     frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
             
             # Run detection with higher confidence threshold to filter false positives
-            results = self.model(frame, verbose=False, conf=0.5)
+            results = self.model(frame, verbose=False, conf=0.65)
             detections = []
             
             if results and len(results) > 0 and results[0].boxes and len(results[0].boxes) > 0:

@@ -34,7 +34,7 @@ DEBUG_DIR = os.path.join(BASE_DIR, 'debug_output')
 # =========================
 SIFT_MIN_MATCH_COUNT = 12
 SIFT_MATCH_RATIO = 0.75
-YOLO_CONF_THRESHOLD = 0.5      # YOLO confidence threshold
+YOLO_CONF_THRESHOLD = 0.65      # YOLO confidence threshold
 MIN_DETECTION_SIZE = 20         # Minimum detection size in pixels
 
 # =========================
