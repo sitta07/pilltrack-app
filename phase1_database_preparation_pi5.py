@@ -206,6 +206,8 @@ class FeatureExtractor:
         """
         # Convert to tensor
         if isinstance(image, np.ndarray):
+            # Make a contiguous copy to avoid negative stride issues
+            image = np.ascontiguousarray(image)
             # Assume image is already normalized [0, 1]
             tensor = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).float().to(DEVICE)
         else:
