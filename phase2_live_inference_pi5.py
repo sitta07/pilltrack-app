@@ -41,8 +41,16 @@ IMAGE_SIZE = 300
 BATCH_SIZE = 1
 FPS_TARGET = 15  # Reduced FPS target for Pi (vs 30 for GPU)
 
+# ⚡ PERFORMANCE OPTIMIZATION FOR PI5
+SKIP_DISPLAY = True  # Skip cv2.imshow (huge speedup!)
+SKIP_FRAMES = 1  # Process every Nth frame (1=all, 2=every 2nd, etc)
+PROCESS_RESOLUTION = (320, 240)  # Lower resolution for faster processing
+DETECTION_CONFIDENCE_THRESHOLD = 0.3  # Skip crops below this
+ENABLE_FRAME_SKIPPING = True  # Drop frames if can't keep up
+
 logger.info(f"🔧 Running on: {DEVICE} (Raspberry Pi 5 Mode)")
 logger.info(f"⚙️  Target FPS: {FPS_TARGET}")
+logger.info(f"⚡ OPTIMIZATION: SKIP_DISPLAY={SKIP_DISPLAY}, SKIP_FRAMES={SKIP_FRAMES}")
 
 # Try to import Picamera2 for Pi, fallback to OpenCV
 try:
@@ -67,13 +75,13 @@ class DetectionResult:
 class AsyncFrameCapture:
     """Capture frames from camera with buffering (thread-safe)"""
     
-    def __init__(self, camera_source: int = 0, buffer_size: int = 2):
+    def __init__(self, camera_source: int = 0, buffer_size: int = 1):
         """
         Initialize camera capture
         
         Args:
             camera_source: Camera device ID or path
-            buffer_size: Frame buffer size
+            buffer_size: Frame buffer size (⚡ reduced to 1 for lower latency)
         """
         self.camera_source = camera_source
         self.buffer_size = buffer_size
@@ -457,14 +465,19 @@ class LiveInferencePipeline:
         logger.info("✅ Pipeline initialized")
     
     def run(self):
-        """Run main inference loop"""
+        """Run main inference loop - OPTIMIZED FOR PI5"""
         logger.info("🎬 Starting inference loop (press 'q' to quit)...")
+        logger.info(f"📊 Display: {'OFF (faster)' if SKIP_DISPLAY else 'ON'}")
+        logger.info(f"⚡ Processing resolution: {PROCESS_RESOLUTION}")
         
         self.camera.start()
         self.camera.start_capture_thread()
         
         frame_count = 0
+        processed_count = 0
+        detection_count = 0
         inference_times = []
+        last_fps_log = time.time()
         
         try:
             while True:
@@ -477,13 +490,34 @@ class LiveInferencePipeline:
                 
                 frame_count += 1
                 
+                # ⚡ Skip frames for speed
+                if frame_count % SKIP_FRAMES != 0:
+                    continue
+                
+                processed_count += 1
+                
+                # ⚡ Resize for faster processing
+                small_frame = cv2.resize(frame, PROCESS_RESOLUTION)
+                
                 # Detect drugs
-                detections = self.detector.detect(frame)
+                detections = self.detector.detect(small_frame)
+                
+                # ⚡ Optimization: Scale bboxes back to original resolution
+                scale_x = frame.shape[1] / PROCESS_RESOLUTION[0]
+                scale_y = frame.shape[0] / PROCESS_RESOLUTION[1]
                 
                 # Process detections
                 for det in detections:
                     try:
+                        # ⚡ Skip low-confidence crops
+                        if det['conf'] < DETECTION_CONFIDENCE_THRESHOLD:
+                            continue
+                        
                         crop = det['crop']
+                        
+                        # ⚡ Quick validation
+                        if crop.size == 0 or crop.shape[0] < 20 or crop.shape[1] < 20:
+                            continue
                         
                         # Preprocess
                         preprocessed = self.preprocessor.preprocess(crop)
@@ -498,15 +532,21 @@ class LiveInferencePipeline:
                         confidence = result['top_1_conf']
                         decision = self.decision_maker.decide(confidence)
                         
-                        # Draw on frame
-                        x1, y1, x2, y2 = det['bbox']
-                        color = self._get_color(decision)
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                        detection_count += 1
                         
-                        # Draw label
-                        label = f"{result['top_1'][:20]} ({confidence:.2f}) [{decision}]"
-                        cv2.putText(frame, label, (x1, y1-10),
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                        # ⚡ Only draw if DISPLAY enabled
+                        if not SKIP_DISPLAY:
+                            # Scale bbox back
+                            x1, y1, x2, y2 = det['bbox']
+                            x1, y1, x2, y2 = int(x1*scale_x), int(y1*scale_y), int(x2*scale_x), int(y2*scale_y)
+                            
+                            color = self._get_color(decision)
+                            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                            
+                            # Draw label
+                            label = f"{result['top_1'][:20]} ({confidence:.2f}) [{decision}]"
+                            cv2.putText(frame, label, (x1, y1-10),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
                     
                     except Exception as e:
                         logger.debug(f"⚠️  Processing error: {e}")
@@ -517,24 +557,34 @@ class LiveInferencePipeline:
                 if len(inference_times) > 30:
                     inference_times.pop(0)
                 
-                # Draw FPS
-                avg_time = np.mean(inference_times)
-                fps = 1.0 / avg_time if avg_time > 0 else 0
-                cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30),
-                          cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                # ⚡ Only display if enabled
+                if not SKIP_DISPLAY:
+                    avg_time = np.mean(inference_times)
+                    fps = 1.0 / avg_time if avg_time > 0 else 0
+                    cv2.putText(frame, f"FPS: {fps:.1f}", (10, 30),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                    
+                    cv2.imshow('PillTrack - Drug Identification', frame)
+                    
+                    # Check for quit
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q'):
+                        logger.info("⏹️  Stopping inference...")
+                        break
+                else:
+                    # ⚡ Check for quit without display
+                    if processed_count % 60 == 0:
+                        key_event = cv2.waitKey(1) & 0xFF
+                        if key_event == ord('q'):
+                            logger.info("⏹️  Stopping inference...")
+                            break
                 
-                # Display
-                cv2.imshow('PillTrack - Drug Identification', frame)
-                
-                # Check for quit
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
-                    logger.info("⏹️  Stopping inference...")
-                    break
-                
-                # Log progress every 60 frames
-                if frame_count % 60 == 0:
-                    logger.info(f"✨ Processed {frame_count} frames, FPS: {fps:.1f}")
+                # Log progress periodically
+                if time.time() - last_fps_log > 5:  # Log every 5 seconds
+                    avg_time = np.mean(inference_times)
+                    fps = 1.0 / avg_time if avg_time > 0 else 0
+                    logger.info(f"✨ Processed {processed_count} frames, {detection_count} detections, FPS: {fps:.1f}")
+                    last_fps_log = time.time()
         
         except KeyboardInterrupt:
             logger.info("⏹️  Interrupted by user")
