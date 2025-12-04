@@ -94,10 +94,23 @@ class AsyncFrameCapture:
     
     def start(self):
         """Start camera capture thread"""
-        if CAMERA_TYPE == 'picamera2':
-            self._start_picamera2()
-        else:
-            self._start_opencv()
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if CAMERA_TYPE == 'picamera2':
+                    self._start_picamera2()
+                    return  # Success
+                else:
+                    self._start_opencv()
+                    return  # Success
+            except Exception as e:
+                logger.warning(f"⚠️  Camera start attempt {attempt + 1}/{max_retries} failed: {e}")
+                if attempt < max_retries - 1:
+                    logger.info("⏳ Retrying in 1 second...")
+                    time.sleep(1)
+                else:
+                    logger.error("❌ All camera start attempts failed!")
+                    raise
     
     def _start_picamera2(self):
         """Start Picamera2 capture with proper error handling"""
@@ -125,6 +138,13 @@ class AsyncFrameCapture:
             
         except Exception as e:
             logger.error(f"❌ Picamera2 failed: {str(e)}")
+            
+            # Check if it's a "device busy" error
+            error_str = str(e).lower()
+            if 'busy' in error_str or 'resource' in error_str or 'pipeline' in error_str:
+                logger.error("   Camera is being used by another process!")
+                logger.error("   Try: python3 release_camera_pi5.py")
+            
             logger.error("   Trying OpenCV fallback...")
             try:
                 self._start_opencv()
