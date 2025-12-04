@@ -90,6 +90,7 @@ class AsyncFrameCapture:
         self.capture_thread = None
         self.latest_frame = None
         self.lock = Lock()
+        self.camera_type = None  # Track which camera is actually being used
     
     def start(self):
         """Start camera capture thread"""
@@ -99,24 +100,69 @@ class AsyncFrameCapture:
             self._start_opencv()
     
     def _start_picamera2(self):
-        """Start Picamera2 capture"""
+        """Start Picamera2 capture with proper error handling"""
         try:
+            logger.info("🔍 Attempting to initialize Picamera2...")
             self.cap = Picamera2(self.camera_source)
+            logger.info("📷 Picamera2 object created")
+            
             # Configure for 480p (lighter load on Pi)
-            self.cap.configure(self.cap.create_preview_configuration(main={"size": (640, 480)}))
+            config = self.cap.create_preview_configuration(main={"size": (640, 480)})
+            logger.info("⚙️  Configuration created")
+            
+            self.cap.configure(config)
+            logger.info("📝 Configuration applied")
+            
             self.cap.start()
             logger.info("✅ Picamera2 started (640x480)")
+            
+            # Test first frame
+            test_frame = self.cap.capture_array()
+            if test_frame is None or test_frame.size == 0:
+                raise ValueError("Captured frame is empty")
+            logger.info(f"✅ First frame captured: {test_frame.shape}")
+            self.camera_type = 'picamera2'
+            
         except Exception as e:
-            logger.error(f"❌ Picamera2 failed: {e}, falling back to OpenCV")
-            self._start_opencv()
+            logger.error(f"❌ Picamera2 failed: {str(e)}")
+            logger.error("   Trying OpenCV fallback...")
+            try:
+                self._start_opencv()
+            except:
+                logger.error("❌ Both Picamera2 and OpenCV failed!")
+                raise
     
     def _start_opencv(self):
-        """Start OpenCV camera capture"""
-        self.cap = cv2.VideoCapture(self.camera_source)
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        self.cap.set(cv2.CAP_PROP_FPS, FPS_TARGET)
-        logger.info("✅ OpenCV camera started (640x480)")
+        """Start OpenCV camera capture with diagnostics"""
+        logger.info("🔍 Attempting to initialize OpenCV camera...")
+        try:
+            self.cap = cv2.VideoCapture(self.camera_source)
+            
+            if not self.cap.isOpened():
+                raise ValueError(f"Cannot open camera {self.camera_source}")
+            
+            logger.info(f"📷 OpenCV VideoCapture opened (device: {self.camera_source})")
+            
+            # Set resolution
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self.cap.set(cv2.CAP_PROP_FPS, FPS_TARGET)
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer
+            
+            logger.info("⚙️  Camera properties set")
+            
+            # Test first frame
+            ret, frame = self.cap.read()
+            if not ret or frame is None:
+                raise ValueError("Cannot read from camera")
+            
+            logger.info(f"✅ First frame captured: {frame.shape}")
+            logger.info("✅ OpenCV camera started (640x480)")
+            self.camera_type = 'opencv'
+            
+        except Exception as e:
+            logger.error(f"❌ OpenCV camera failed: {str(e)}")
+            raise
     
     def _capture_loop(self):
         """Capture frames in background thread"""
@@ -125,11 +171,16 @@ class AsyncFrameCapture:
         
         while self.running:
             try:
-                if CAMERA_TYPE == 'picamera2':
+                # Use tracked camera type (may have fallen back from picamera2 to opencv)
+                if self.camera_type == 'picamera2':
                     frame = self.cap.capture_array()
+                    if frame is None or frame.size == 0:
+                        logger.warning("⚠️  Picamera2 returned empty frame, trying next capture")
+                        continue
                 else:
                     ret, frame = self.cap.read()
-                    if not ret:
+                    if not ret or frame is None:
+                        logger.warning("⚠️  OpenCV read failed, trying next capture")
                         continue
                 
                 frame_count += 1
@@ -137,7 +188,7 @@ class AsyncFrameCapture:
                 # Calculate FPS every 30 frames
                 if frame_count % 30 == 0:
                     elapsed = time.time() - start_time
-                    fps = 30 / elapsed
+                    fps = 30 / elapsed if elapsed > 0 else 0
                     logger.debug(f"📷 Capture FPS: {fps:.1f}")
                     start_time = time.time()
                 
