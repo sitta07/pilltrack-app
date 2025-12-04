@@ -647,6 +647,7 @@ class LiveInferencePipeline:
                 scale_y = frame.shape[0] / PROCESS_RESOLUTION[1]
                 
                 # Process detections
+                detected_drugs = []
                 for det in detections:
                     try:
                         # ⚡ Skip low-confidence crops
@@ -673,6 +674,14 @@ class LiveInferencePipeline:
                         decision = self.decision_maker.decide(confidence)
                         
                         detection_count += 1
+                        
+                        # Collect detected drug
+                        drug_name = result['top_1']
+                        detected_drugs.append({
+                            'name': drug_name,
+                            'confidence': confidence,
+                            'decision': decision
+                        })
                         
                         # ⚡ Only draw if DISPLAY enabled
                         if not SKIP_DISPLAY:
@@ -719,11 +728,19 @@ class LiveInferencePipeline:
                             logger.info("⏹️  Stopping inference...")
                             break
                 
-                # Log progress periodically
+                # Log progress periodically with detected drugs
                 if time.time() - last_fps_log > 5:  # Log every 5 seconds
                     avg_time = np.mean(inference_times)
                     fps = 1.0 / avg_time if avg_time > 0 else 0
+                    
+                    # Log main stats
                     logger.info(f"✨ Processed {processed_count} frames, {detection_count} detections, FPS: {fps:.1f}")
+                    
+                    # Log detected drugs if any
+                    if detected_drugs:
+                        drug_list = ", ".join([f"{d['name']} ({d['confidence']:.2f})" for d in detected_drugs])
+                        logger.info(f"💊 Found: {drug_list}")
+                    
                     last_fps_log = time.time()
         
         except KeyboardInterrupt:
