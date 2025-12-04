@@ -1,36 +1,73 @@
-# Core dependencies
-numpy==1.24.3
-opencv-python==4.8.0.74
-Pillow==10.0.0
+# PillTrack Raspberry Pi 5 Requirements
+# =====================================================
+# Optimized for Python 3.13 + ARM64 (Raspberry Pi 5)
+# 
+# CRITICAL: NumPy build issues on Pi 5 with Python 3.13
+# SOLUTION: Use pre-built wheels and latest compatible versions
+#
+# INSTALL STEPS:
+# 1. pip install --upgrade pip setuptools wheel
+# 2. pip install numpy==2.1.3 --no-cache-dir
+# 3. pip install -r requirements_pi5.txt
+#
+# FOR PYTORCH (STRONGLY RECOMMENDED - much faster):
+# sudo apt install -y python3-torch python3-torchvision
+#
+# =====================================================
 
-# Computer Vision
-opencv-contrib-python==4.8.0.74
-scikit-image==0.21.0
+# CORE NUMERICAL (Python 3.13 compatible)
+# Using latest numpy compatible with ARM64
+numpy==2.1.3
 
-# Optimization & Processing
-scipy==1.11.2
-Pillow-SIMD==9.2.0.post1
+# IMAGE I/O
+opencv-python==4.10.0.84
+Pillow==11.0.0
 
-# Lightweight alternatives to FAISS (ARM compatible)
-faiss-cpu==1.7.4
+# PYTORCH - BEST: Use APT for pre-built wheels
+# sudo apt install -y python3-torch python3-torchvision
+# 
+# Alternative if using pip:
+# torch==2.5.1
+# torchvision==0.20.1
 
-# Timm & Augmentation (lightweight)
-timm==0.9.7
-albumentations==1.3.0
+# COMPUTER VISION & IMAGE PROCESSING
+opencv-contrib-python==4.10.0.84
+scikit-image==0.24.0
 
-# Data & ML utilities
-scikit-learn==1.3.1
-pandas==2.0.3
+# SCIENTIFIC COMPUTING
+scipy==1.14.1
 
-# Visualization (optional)
-matplotlib==3.7.2
-seaborn==0.12.2
+# VECTOR SEARCH (FAISS - CPU for Pi 5)
+faiss-cpu==1.8.0
 
-# Progress & logging
-tqdm==4.66.1
+# DEEP LEARNING MODEL ARCHITECTURES
+timm==1.0.7
+albumentations==1.4.11
 
-# Optional: For faster inference
-onnxruntime-arm64==1.16.0
+# DATA SCIENCE & ANALYTICS
+scikit-learn==1.5.2
+pandas==2.2.3
 
-# Optional: For Picamera2 support (use pip)
-picamera2==0.3.0
+# VISUALIZATION (optional for headless Pi)
+matplotlib==3.10.0
+seaborn==0.13.2
+
+# UTILITIES & PROGRESS
+tqdm==4.67.1
+pyyaml==6.0.2
+python-dotenv==1.0.1
+
+# =====================================================
+# OPTIONAL PACKAGES (uncomment if needed)
+# =====================================================
+
+# For ONNX model support
+# onnxruntime==1.19.2
+
+# For Picamera2 (better to use apt):
+# sudo apt install -y python3-picamera2
+
+# For REST API in future
+# flask==3.1.2
+# fastapi==0.115.0
+# uvicorn==0.30.0

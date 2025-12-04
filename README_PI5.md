@@ -26,7 +26,11 @@
 
 ---
 
-## 🚀 ขั้นตอนการติดตั้ง (เร็ว ๆ)
+## 🚀 ขั้นตอนการติดตั้ง (Fixed for Python 3.13)
+
+### ⚠️ หมายเหตุสำคัญ
+กรณี Python 3.13 อาจพบข้อผิดพลาด numpy build  
+👉 **ใช้ script ติดตั้งอัตโนมัติ** (ด้านล่าง) ด้วย `--prefer-binary`
 
 ### 1️⃣ ตั้งค่า Raspberry Pi
 
@@ -34,13 +38,13 @@
 # อัปเดตระบบ
 sudo apt update && sudo apt upgrade -y
 
-# ติดตั้ง Python tools
-sudo apt install -y python3-pip python3-venv git
+# ติดตั้ง build tools ที่จำเป็น
+sudo apt install -y python3-pip python3-venv git \
+    python3-dev build-essential gfortran \
+    libopenblas-dev liblapack-dev
 
-# ติดตั้ง OpenCV dependencies
-sudo apt install -y libatlas-base-dev libjasper-dev \
-    libtiff-dev libjasper-dev libharfbuzz0b libwebp6 \
-    libharfbuzz-dev libwebp-dev
+# ติดตั้ง OpenCV + PyTorch จาก apt (ดีกว่า pip!)
+sudo apt install -y python3-opencv python3-torch python3-torchvision
 ```
 
 ### 2️⃣ โคลนโปรเจกต์
@@ -51,30 +55,43 @@ git clone https://github.com/sitta07/pilltrack-app.git
 cd pilltrack-app
 
 # สร้าง Virtual Environment
-python3 -m venv venv
-source venv/bin/activate  # Linux/Mac
-# หรือ venv\Scripts\activate.bat  # Windows
+python3 -m venv myenv
+source myenv/bin/activate
 ```
 
-### 3️⃣ ติดตั้ง Dependencies
+### 3️⃣ ติดตั้ง Dependencies (AUTOMATED - RECOMMENDED)
 
+**ใช้ script อัตโนมัติ (แนะนำ):**
 ```bash
-# ติดตั้ง PyTorch สำหรับ Pi 5 (ARM 64-bit)
-pip3 install --index-url https://download.pytorch.org/whl/cpu \
-    torch torchvision torchaudio
+# Script จะทำทั้งหมด (รวม fix numpy error)
+bash install_pi5_python313.sh
 
-# หรือ ถ้า Pi OS เก่า ให้ใช้ apt (ดีกว่า)
-sudo apt install -y python3-torch python3-torchvision
-
-# ติดตั้ง dependencies อื่น ๆ
-pip3 install -r requirements_pi5.txt
-
-# ติดตั้ง YOLO
-pip3 install ultralytics
-
-# ติดตั้ง Picamera2 (ถ้าใช้กล้อง Pi)
-sudo apt install -y -o APT::Immediate-Configure=false python3-picamera2
+# หรือ manual steps:
+chmod +x install_pi5_python313.sh
+./install_pi5_python313.sh
 ```
+
+**หรือทำเอง (manual):**
+```bash
+# Step 1: Upgrade pip
+pip install --upgrade pip setuptools wheel
+
+# Step 2: Install numpy with pre-built wheels (FIX FOR ERROR)
+pip install numpy==2.1.3 --prefer-binary --no-cache-dir
+
+# Step 3: Install other packages
+pip install -r requirements_pi5.txt --prefer-binary --no-cache-dir
+
+# Step 4: Install YOLO
+pip install ultralytics
+
+# Step 5: Verify installation
+python3 check_pi5_setup.py
+```
+
+### ⚡ หากพบข้อผิดพลาด numpy
+
+👉 **ดู**: `NUMPY_BUILD_ERROR_FIX.md` เพื่อแนวทางแก้ไข
 
 ---
 
@@ -203,21 +220,38 @@ partial_threshold = 0.65  # เพิ่มจาก 0.60
 
 ## 🐛 แก้ปัญหา
 
+### ❌ ข้อผิดพลาด: NumPy Build Error (Python 3.13)
+```
+error: subprocess-exited-with-error
+Getting requirements to build wheel did not run successfully.
+```
+
+**วิธีแก้:**
+```bash
+# ใช้ pre-built wheels (ไม่ต้อง compile)
+pip install numpy==2.1.3 --prefer-binary --no-cache-dir
+
+# หรือใช้ automatic script
+bash install_pi5_python313.sh
+
+# ดู: NUMPY_BUILD_ERROR_FIX.md สำหรับวิธีอื่น ๆ
+```
+
 ### ❌ ข้อผิดพลาด: "ModuleNotFoundError: No module named 'torch'"
 
 ```bash
-# ติดตั้ง PyTorch อีกครั้ง
-pip3 install --index-url https://download.pytorch.org/whl/cpu torch
+# ติดตั้ง PyTorch จาก apt (เร็วกว่า + ไม่มี error)
+sudo apt install -y python3-torch python3-torchvision
 
-# หรือ ลองใช้ apt
-sudo apt install python3-torch -y
+# หรือ จากท pip
+pip install torch --prefer-binary
 ```
 
 ### ❌ ข้อผิดพลาด: "cannot import name 'YOLO'"
 
 ```bash
 # ติดตั้ง ultralytics
-pip3 install -U ultralytics
+pip install -U ultralytics
 ```
 
 ### ❌ ข้อผิดพลาด: "Camera not found"
@@ -237,7 +271,7 @@ ls /dev/video*
 # แก้ไข: BATCH_SIZE = 1 (ตั้งค่าน้อยสุด)
 
 # หรือ ปิดแอปอื่น ๆ
-sudo systemctl stop apache2  # หากใช้เซิร์ฟเวอร์
+sudo systemctl stop apache2
 
 # ดูการใช้หน่วยความจำ
 free -h
