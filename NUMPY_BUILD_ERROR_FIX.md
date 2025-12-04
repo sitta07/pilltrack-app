@@ -35,8 +35,9 @@ sudo apt install -y \
     python3-dev \
     build-essential \
     gfortran \
-    libopenblas-dev \
-    liblapack-dev
+    libblas-dev \
+    liblapack-dev \
+    libatlas3-base
 
 pip install numpy==2.1.3 --no-cache-dir
 ```

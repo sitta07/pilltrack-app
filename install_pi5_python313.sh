@@ -26,16 +26,14 @@ sudo apt install -y \
     python3-venv \
     build-essential \
     git \
-    libatlas-base-dev \
-    libjasper-dev \
+    libblas-dev \
+    liblapack-dev \
+    libatlas3-base \
     libtiff-dev \
     libharfbuzz0b \
-    libwebp6 \
     libharfbuzz-dev \
     libwebp-dev \
-    gfortran \
-    libopenblas-dev \
-    liblapack-dev
+    gfortran
 echo "✅ Build dependencies installed"
 echo ""
 
