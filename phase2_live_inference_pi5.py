@@ -210,6 +210,15 @@ class YOLODrugDetector:
             List of detections {bbox, crop, conf}
         """
         try:
+            # Ensure frame is 3-channel (BGR)
+            if len(frame.shape) != 3 or frame.shape[2] != 3:
+                if len(frame.shape) == 4:  # Remove batch dimension if present
+                    frame = frame[0]
+                if frame.shape[2] == 4:  # Convert BGRA to BGR
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+                elif frame.shape[2] == 1:  # Convert grayscale to BGR
+                    frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+            
             results = self.model(frame, verbose=False, conf=0.5)
             detections = []
             
