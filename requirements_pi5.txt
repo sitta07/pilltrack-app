@@ -42,8 +42,7 @@ faiss-cpu==1.13.0
 
 # DEEP LEARNING MODEL ARCHITECTURES
 timm==1.0.7
-albumentations==1.4.11
-albucore==0.0.34
+albumentations==1.3.1
 
 # DATA SCIENCE & ANALYTICS
 scikit-learn==1.5.2
