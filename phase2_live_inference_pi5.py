@@ -683,6 +683,9 @@ class LiveInferencePipeline:
                             'decision': decision
                         })
                         
+                        # 🔔 Print immediately when drug is found
+                        logger.info(f"💊 Found: {drug_name} ({confidence:.2f})")
+                        
                         # ⚡ Only draw if DISPLAY enabled
                         if not SKIP_DISPLAY:
                             # Scale bbox back
