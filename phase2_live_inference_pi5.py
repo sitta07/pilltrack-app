@@ -251,11 +251,22 @@ class YOLODrugDetector:
             model_path: Path to YOLO model (ONNX or PT)
         """
         try:
+            # Check if model file exists
+            if not os.path.exists(model_path):
+                logger.error(f"❌ Model file not found: {model_path}")
+                logger.error(f"   Current directory: {os.getcwd()}")
+                logger.error(f"   Available files: {os.listdir('.')[:10]}")
+                raise FileNotFoundError(f"YOLO model not found: {model_path}")
+            
+            logger.info(f"📦 Loading YOLO model: {model_path}")
             from ultralytics import YOLO
             self.model = YOLO(model_path)
             logger.info(f"✅ Loaded YOLO model: {model_path}")
         except ImportError:
-            logger.error("❌ ultralytics not installed")
+            logger.error("❌ ultralytics not installed. Install: pip install ultralytics")
+            raise
+        except Exception as e:
+            logger.error(f"❌ Failed to load YOLO model: {e}")
             raise
     
     def detect(self, frame: np.ndarray) -> List[Dict]:
@@ -350,13 +361,17 @@ class BatchFeatureExtractor:
             model_name: Name of timm model
         """
         try:
+            logger.info(f"📦 Loading feature extractor: {model_name}")
             import timm
+            logger.info(f"   Downloading model from Hugging Face...")
             self.model = timm.create_model(model_name, pretrained=True, features_only=False)
             self.model = self.model.to(DEVICE)
             self.model.eval()
             logger.info(f"✅ Loaded feature extractor: {model_name}")
         except Exception as e:
-            logger.error(f"❌ Cannot load model: {e}")
+            logger.error(f"❌ Cannot load feature extractor model: {e}")
+            logger.error(f"   Model: {model_name}")
+            logger.error(f"   Device: {DEVICE}")
             raise
     
     def extract_batch(self, images: List[np.ndarray]) -> np.ndarray:
@@ -505,13 +520,40 @@ class LiveInferencePipeline:
         """
         logger.info("🚀 Initializing Live Inference Pipeline (Pi 5 Mode)")
         
-        # Initialize components
-        self.camera = AsyncFrameCapture(camera_source)
-        self.detector = YOLODrugDetector(yolo_model)
-        self.preprocessor = DrugPreprocessor()
-        self.extractor = BatchFeatureExtractor()
-        self.searcher = FAISSSearcher(index_path, metadata_path)
-        self.decision_maker = ConfidenceDecisionMaker()
+        try:
+            # Initialize components with detailed logging
+            logger.info("1️⃣  Initializing camera...")
+            self.camera = AsyncFrameCapture(camera_source)
+            logger.info("   ✅ Camera initialized")
+            
+            logger.info("2️⃣  Loading YOLO detector...")
+            self.detector = YOLODrugDetector(yolo_model)
+            logger.info("   ✅ YOLO detector loaded")
+            
+            logger.info("3️⃣  Initializing preprocessor...")
+            self.preprocessor = DrugPreprocessor()
+            logger.info("   ✅ Preprocessor initialized")
+            
+            logger.info("4️⃣  Loading feature extractor...")
+            self.extractor = BatchFeatureExtractor()
+            logger.info("   ✅ Feature extractor loaded")
+            
+            logger.info("5️⃣  Loading FAISS searcher...")
+            self.searcher = FAISSSearcher(index_path, metadata_path)
+            logger.info("   ✅ FAISS searcher loaded")
+            
+            logger.info("6️⃣  Initializing decision maker...")
+            self.decision_maker = ConfidenceDecisionMaker()
+            logger.info("   ✅ Decision maker initialized")
+            
+            logger.info("✅ All components initialized successfully!")
+            
+        except Exception as e:
+            logger.error(f"❌ Pipeline initialization failed at one of the steps")
+            logger.error(f"   Error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
         
         logger.info("✅ Pipeline initialized")
     
