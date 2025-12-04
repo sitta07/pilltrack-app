@@ -32,13 +32,13 @@ Pillow==11.0.0
 
 # COMPUTER VISION & IMAGE PROCESSING
 opencv-contrib-python==4.10.0.84
-scikit-image==0.24.0
+scikit-image==0.23.2
 
 # SCIENTIFIC COMPUTING
 scipy==1.14.1
 
 # VECTOR SEARCH (FAISS - CPU for Pi 5)
-faiss-cpu==1.8.0
+faiss-cpu==1.13.0
 
 # DEEP LEARNING MODEL ARCHITECTURES
 timm==1.0.7
