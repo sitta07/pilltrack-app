@@ -732,19 +732,26 @@ class LiveInferencePipeline:
                             break
                 
                 # Log progress periodically with detected drugs
-                if time.time() - last_fps_log > 5:  # Log every 5 seconds
-                    avg_time = np.mean(inference_times)
-                    fps = 1.0 / avg_time if avg_time > 0 else 0
-                    
-                    # Log main stats
-                    logger.info(f"✨ Processed {processed_count} frames, {detection_count} detections, FPS: {fps:.1f}")
-                    
-                    # Log detected drugs if any
-                    if detected_drugs:
-                        drug_list = ", ".join([f"{d['name']} ({d['confidence']:.2f})" for d in detected_drugs])
-                        logger.info(f"💊 Found: {drug_list}")
-                    
-                    last_fps_log = time.time()
+                        if time.time() - last_fps_log > 5:  # Log every 5 seconds
+                            avg_time = np.mean(inference_times)
+                            fps = 1.0 / avg_time if avg_time > 0 else 0
+                            # Print only the top-1 highest-confidence drug per frame, and filter out duplicates
+                            if detected_drugs:
+                                # Remove duplicates, keep highest confidence for each drug
+                                unique_drugs = {}
+                                for d in detected_drugs:
+                                    name = d['name']
+                                    if name not in unique_drugs or d['confidence'] > unique_drugs[name]['confidence']:
+                                        unique_drugs[name] = d
+                                # Find top-1 by confidence
+                                top_drug = max(unique_drugs.values(), key=lambda x: x['confidence'])
+                                logger.info(f"💊 Top-1: {top_drug['name']} ({top_drug['confidence']:.2f}) [{top_drug['decision']}]" )
+                                # Optionally, print all unique drugs for this frame
+                                drug_list = ", ".join([f"{d['name']} ({d['confidence']:.2f})" for d in unique_drugs.values()])
+                                logger.info(f"💊 All drugs: {drug_list}")
+                            # Log main stats
+                            logger.info(f"✨ Processed {processed_count} frames, {detection_count} detections, FPS: {fps:.1f}")
+                            last_fps_log = time.time()
         
         except KeyboardInterrupt:
             logger.info("⏹️  Interrupted by user")
