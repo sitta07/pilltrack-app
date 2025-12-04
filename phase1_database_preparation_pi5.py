@@ -403,7 +403,9 @@ class DatabasePreparationPipeline:
                 img_clean = remover.remove_background(img)
                 img_resized = cv2.resize(img_clean, (IMAGE_SIZE, IMAGE_SIZE))
                 img_normalized = img_resized.astype(np.float32) / 255.0
-                img_normalized = img_normalized[..., ::-1]  # BGR to RGB
+                
+                # Convert BGR to RGB (make contiguous copy)
+                img_normalized = np.ascontiguousarray(cv2.cvtColor(img_normalized, cv2.COLOR_BGR2RGB))
                 
                 # Extract multi-scale features
                 scales = multiscale_gen.generate(img_normalized)
@@ -418,6 +420,13 @@ class DatabasePreparationPipeline:
             
             # Step 4: Save index
             logger.info(f"\n💾 Saving FAISS index ({len(index_builder.drug_names)} drugs)...")
+            
+            # Check if database is empty
+            if len(index_builder.drug_names) == 0:
+                logger.error("❌ No drugs were processed! Check drug-scraping-c folder for images.")
+                logger.error("   Expected: drug-scraping-c/<drug_name>/<image.jpg>")
+                raise ValueError("Database is empty - no drug images were processed")
+            
             index_path = os.path.join(self.output_folder, 'drug_index.faiss')
             metadata_path = os.path.join(self.output_folder, 'metadata.json')
             index_builder.save(index_path, metadata_path)

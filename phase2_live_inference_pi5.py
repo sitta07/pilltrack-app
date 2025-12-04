@@ -273,9 +273,9 @@ class DrugPreprocessor:
         padded = cv2.copyMakeBorder(resized, top, bottom, left, right,
                                     cv2.BORDER_CONSTANT, value=(255, 255, 255))
         
-        # Normalize to [0, 1] and convert BGR->RGB
+        # Normalize to [0, 1] and convert BGR->RGB (make contiguous copy)
         normalized = padded.astype(np.float32) / 255.0
-        normalized = normalized[..., ::-1]  # BGR to RGB
+        normalized = np.ascontiguousarray(cv2.cvtColor(normalized, cv2.COLOR_BGR2RGB))
         
         return normalized
 
@@ -341,11 +341,28 @@ class FAISSSearcher:
             metadata_path: Path to metadata JSON
             k: Number of nearest neighbors
         """
+        # Check if database files exist
+        if not os.path.exists(index_path):
+            logger.error(f"❌ Database not found: {index_path}")
+            logger.error("   Run phase1_database_preparation_pi5.py first")
+            raise FileNotFoundError(f"FAISS index not found: {index_path}")
+        
+        if not os.path.exists(metadata_path):
+            logger.error(f"❌ Metadata not found: {metadata_path}")
+            logger.error("   Run phase1_database_preparation_pi5.py first")
+            raise FileNotFoundError(f"Metadata not found: {metadata_path}")
+        
         self.index = faiss.read_index(index_path)
         
         with open(metadata_path, 'r') as f:
             data = json.load(f)
             self.drug_names = data['drug_names']
+        
+        # Check if database is empty
+        if len(self.drug_names) == 0:
+            logger.error("❌ Database is empty! No drugs loaded.")
+            logger.error("   Run phase1_database_preparation_pi5.py again to populate the database")
+            raise ValueError("Database is empty - no drugs loaded from metadata")
         
         self.k = k
         logger.info(f"✅ Loaded FAISS index ({len(self.drug_names)} drugs)")
