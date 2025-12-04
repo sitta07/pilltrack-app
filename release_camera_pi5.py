@@ -7,6 +7,8 @@ import subprocess
 import sys
 import time
 import logging
+import signal
+import os
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -17,66 +19,62 @@ def kill_camera_processes():
     logger.info("🔓 RELEASING CAMERA")
     logger.info("=" * 60)
     
-    # โปรแกรมที่อาจใช้กล้อง
-    processes_to_check = [
-        'libcamera',
-        'libcamera-hello',
-        'python3',
-        'raspivid',
-        'raspistill',
+    logger.info("\n🔍 Finding and killing processes using camera...")
+    
+    # โปรแกรมที่ต้อง kill
+    processes = [
+        ('python3', 'phase2_live_inference'),
+        ('python3', 'phase1_database'),
+        ('libcamera-hello', None),
+        ('libcamera-still', None),
+        ('raspivid', None),
+        ('raspistill', None),
     ]
     
-    logger.info("\n🔍 Finding processes using camera...")
-    
-    # ใช้ lsof เพื่อหาว่าใครใช้ /dev/video*
-    try:
-        result = subprocess.run(
-            ["lsof", "/dev/video0"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        
-        if result.stdout:
-            logger.info("📋 Processes using /dev/video0:")
-            for line in result.stdout.split('\n'):
-                if line.strip():
-                    logger.info(f"   {line}")
-            
-            # Extract PIDs and kill them
-            lines = result.stdout.split('\n')[1:]  # Skip header
-            for line in lines:
-                if line.strip():
-                    parts = line.split()
-                    if len(parts) > 1:
-                        try:
-                            pid = int(parts[1])
-                            logger.info(f"   Killing PID {pid}...")
-                            subprocess.run(["kill", "-9", str(pid)], timeout=2)
-                            logger.info(f"   ✅ Killed PID {pid}")
-                        except:
-                            pass
-    except FileNotFoundError:
-        logger.warning("⚠️  lsof not available, trying pkill...")
-        # Fallback: kill Python processes
+    for cmd, pattern in processes:
         try:
-            subprocess.run(["pkill", "-f", "phase2_live_inference"], timeout=2)
-            logger.info("✅ Killed phase2_live_inference processes")
+            if pattern:
+                search_cmd = f"pkill -f '{pattern}'"
+            else:
+                search_cmd = f"pkill '{cmd}'"
+            
+            logger.info(f"   Killing: {search_cmd}")
+            subprocess.run(search_cmd, shell=True, timeout=2)
+            time.sleep(0.5)
         except:
             pass
-    except Exception as e:
-        logger.warning(f"⚠️  Error checking processes: {e}")
     
-    logger.info("\n⏳ Waiting 2 seconds for camera to be released...")
-    time.sleep(2)
+    # Try more aggressive kill
+    logger.info("\n   Forcing camera device reset...")
+    try:
+        subprocess.run("fuser -k /dev/video0", shell=True, timeout=2)
+        logger.info("   ✅ Killed /dev/video0 users")
+    except:
+        pass
     
-    logger.info("✅ Camera should now be available\n")
+    # Unload camera module (more aggressive)
+    logger.info("\n   Trying kernel module reset...")
+    try:
+        subprocess.run("sudo modprobe -r imx708", shell=True, timeout=2)
+        logger.info("   ✅ Unloaded imx708 module")
+        time.sleep(1)
+        subprocess.run("sudo modprobe imx708", shell=True, timeout=2)
+        logger.info("   ✅ Reloaded imx708 module")
+    except:
+        logger.warning("   ⚠️  Could not reset kernel module (need sudo)")
+    
+    logger.info("\n⏳ Waiting 3 seconds for camera to be released...")
+    time.sleep(3)
+    
+    logger.info("✅ Camera release complete\n")
     logger.info("=" * 60)
     logger.info("📝 NEXT STEPS:")
     logger.info("=" * 60)
-    logger.info("1. Retry the inference:")
+    logger.info("Option 1 - Auto reset and run:")
+    logger.info("   bash reset_and_run_pi5.sh")
+    logger.info("\nOption 2 - Manual retry:")
     logger.info("   python3 phase2_live_inference_pi5.py")
-    logger.info("\n2. If still fails, reboot:")
+    logger.info("\nOption 3 - Full reboot:")
     logger.info("   sudo reboot")
     logger.info("=" * 60)
 

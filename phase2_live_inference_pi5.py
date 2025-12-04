@@ -282,6 +282,10 @@ class YOLODrugDetector:
             from ultralytics import YOLO
             self.model = YOLO(model_path)
             logger.info(f"✅ Loaded YOLO model: {model_path}")
+            
+            # Check model info
+            logger.info(f"   Model task: {self.model.task}")
+            logger.info(f"   Model names: {self.model.names}")
         except ImportError:
             logger.error("❌ ultralytics not installed. Install: pip install ultralytics")
             raise
@@ -309,22 +313,45 @@ class YOLODrugDetector:
                 elif frame.shape[2] == 1:  # Convert grayscale to BGR
                     frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
             
-            results = self.model(frame, verbose=False, conf=0.5)
+            # Run detection with higher confidence threshold to filter false positives
+            results = self.model(frame, verbose=False, conf=0.6)
             detections = []
             
-            if results and results[0].boxes:
-                for box in results[0].boxes:
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-                    conf = float(box.conf[0])
-                    
-                    # Extract crop
-                    crop = frame[y1:y2, x1:x2]
-                    
-                    detections.append({
-                        'bbox': (x1, y1, x2, y2),
-                        'crop': crop,
-                        'conf': conf
-                    })
+            if results and len(results) > 0 and results[0].boxes and len(results[0].boxes) > 0:
+                logger.debug(f"🔍 Found {len(results[0].boxes)} initial detections")
+                
+                for i, box in enumerate(results[0].boxes):
+                    try:
+                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
+                        conf = float(box.conf[0])
+                        
+                        # Validate bbox
+                        if x1 >= x2 or y1 >= y2 or x1 < 0 or y1 < 0:
+                            logger.debug(f"   Skipping invalid bbox: {(x1, y1, x2, y2)}")
+                            continue
+                        
+                        # Validate crop
+                        if x2 > frame.shape[1] or y2 > frame.shape[0]:
+                            x2 = min(x2, frame.shape[1])
+                            y2 = min(y2, frame.shape[0])
+                        
+                        crop = frame[y1:y2, x1:x2]
+                        
+                        if crop.size == 0:
+                            logger.debug(f"   Skipping empty crop")
+                            continue
+                        
+                        detections.append({
+                            'bbox': (x1, y1, x2, y2),
+                            'crop': crop,
+                            'conf': conf
+                        })
+                    except Exception as e:
+                        logger.debug(f"   Error processing detection {i}: {e}")
+                        continue
+                
+                if len(detections) > 0:
+                    logger.debug(f"✅ Processed {len(detections)} valid detections")
             
             return detections
         except Exception as e:

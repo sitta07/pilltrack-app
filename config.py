@@ -34,6 +34,8 @@ DEBUG_DIR = os.path.join(BASE_DIR, 'debug_output')
 # =========================
 SIFT_MIN_MATCH_COUNT = 12
 SIFT_MATCH_RATIO = 0.75
+YOLO_CONF_THRESHOLD = 0.6      # ✅ YOLO confidence threshold (higher = fewer false positives)
+MIN_DETECTION_SIZE = 20         # ✅ Minimum detection size in pixels
 
 # =========================
 # 🔍 NEURAL NETWORK SETTINGS
