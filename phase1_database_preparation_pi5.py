@@ -85,6 +85,15 @@ class BackgroundRemover:
             Image with white background
         """
         try:
+            # Ensure image is 3-channel (BGR)
+            if len(image.shape) != 3 or image.shape[2] != 3:
+                if len(image.shape) == 4:  # Remove batch dimension if present
+                    image = image[0]
+                if image.shape[2] == 4:  # Convert BGRA to BGR
+                    image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
+                elif image.shape[2] == 1:  # Convert grayscale to BGR
+                    image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            
             results = self.model(image, verbose=False)
             mask = results[0].masks.data[0].cpu().numpy() if results[0].masks else None
             
@@ -97,7 +106,7 @@ class BackgroundRemover:
             output = image * mask_3d + 255 * (1 - mask_3d)
             return output.astype(np.uint8)
         except Exception as e:
-            logger.warning(f"⚠️ Background removal failed: {e}, returning original image")
+            logger.warning(f"⚠️ Detection failed: {e}, returning original image")
             return image
     
     def batch_remove_backgrounds(self, image_paths: List[str], max_workers: int = 2) -> List[np.ndarray]:
